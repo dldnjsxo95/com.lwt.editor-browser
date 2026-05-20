@@ -150,5 +150,16 @@ namespace EditorBrowser.Native
         public static readonly IntPtr HWND_BOTTOM    = new IntPtr(1);
         public static readonly IntPtr HWND_TOPMOST   = new IntPtr(-1);
         public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+
+        // ----- RedrawWindow 플래그 -----
+        public const uint RDW_INVALIDATE  = 0x0001;
+        public const uint RDW_ERASE       = 0x0004;
+        public const uint RDW_FRAME       = 0x0400;
+        public const uint RDW_ALLCHILDREN = 0x0080;
+        public const uint RDW_UPDATENOW   = 0x0100;
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
     }
 }

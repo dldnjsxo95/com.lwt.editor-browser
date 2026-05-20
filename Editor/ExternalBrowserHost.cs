@@ -45,6 +45,11 @@ namespace EditorBrowser
         private bool _attached;
         private bool _visible;
         private bool _disposed;
+        private DateTime _processStartUtc;
+
+        // Chrome init 안정성 보장 — spawn 직후 즉시 reparent 하면 surface가 깨질 수 있어
+        // 최소 이만큼 경과 후에만 attach 시도.
+        private static readonly TimeSpan AttachMinDelay = TimeSpan.FromMilliseconds(600);
 
         private int _lastX, _lastY, _lastW, _lastH;
 
@@ -109,6 +114,10 @@ namespace EditorBrowser
             if (!_visible)
             {
                 Win32.ShowWindow(_browserHwnd, Win32.SW_SHOWNOACTIVATE);
+                // 첫 SHOW 시 명시적 redraw로 surface paint 트리거
+                Win32.RedrawWindow(_browserHwnd, IntPtr.Zero, IntPtr.Zero,
+                    Win32.RDW_INVALIDATE | Win32.RDW_ERASE | Win32.RDW_FRAME
+                    | Win32.RDW_ALLCHILDREN | Win32.RDW_UPDATENOW);
                 _visible = true;
             }
         }
@@ -181,14 +190,14 @@ namespace EditorBrowser
             // --app=url : 탭/주소창/메뉴 없는 PWA 앱 모드
             // --user-data-dir : 호스트 일반 프로필과 격리
             // --window-position : 오프스크린 spawn 후 reparent 완료되면 실제 위치로 이동 → splash flash 방지
-            // --disable-gpu / --disable-gpu-compositing : owner-popup 으로 reparent된 후 Chrome
-            //   GPU compositor가 surface DC를 잃어 검은 화면이 되는 문제 회피. CPU 렌더링 강제.
-            //   (V2에서 surface 보존 가능한 패턴으로 개선 시 제거 가능)
+            // --in-process-gpu : GPU 프로세스를 메인 프로세스로 통합 — owner-popup 으로 reparent된
+            //   후에도 surface DC를 유지하기 위함. 별도 GPU 프로세스가 own하는 surface는 reparent
+            //   시점에 끊어져 검은 화면을 유발할 수 있음.
             var args =
                 $"--app={url} " +
                 $"--user-data-dir=\"{UserDataDirRoot}\" " +
                 "--no-first-run --no-default-browser-check --disable-popup-blocking " +
-                "--disable-gpu --disable-gpu-compositing " +
+                "--in-process-gpu " +
                 $"--window-position={OffscreenX},{OffscreenY} --window-size=800,600";
 
             var psi = new ProcessStartInfo
@@ -214,18 +223,24 @@ namespace EditorBrowser
             _browserHwnd = IntPtr.Zero;
             _attached = false;
             _visible = false;
+            _processStartUtc = DateTime.UtcNow;
             _lastX = _lastY = _lastW = _lastH = int.MinValue;
 
             Debug.Log($"{LogPrefix} 브라우저 시작 kind={info.Kind} pid={_process?.Id} url={url} (오프스크린 spawn)");
         }
 
         /// <summary>
-        /// PID로 EnumWindows + 클래스명 매칭으로 진짜 앱 윈도우를 찾는다.
-        /// Process.MainWindowHandle은 Chrome --app= 모드에서 splash/dummy 윈도우를 잡을 수 있어 사용 안 함.
+        /// PID로 EnumWindows + 클래스명 매칭으로 진짜 앱 윈도우를 찾고,
+        /// 메모리 검증 패턴(HIDE → 스타일/owner 변경 → SHOW + RedrawWindow) 으로 attach.
+        /// 즉시 reparent는 Chrome rendering surface를 깨뜨려 검은 화면을 유발하므로
+        /// spawn 후 최소 AttachMinDelay 경과를 보장한다.
         /// </summary>
         private bool TryAttach()
         {
             if (_process == null || _process.HasExited) return false;
+
+            // surface init 안정화 대기
+            if (DateTime.UtcNow - _processStartUtc < AttachMinDelay) return false;
 
             var found = FindChromeAppWindowByPid((uint)_process.Id);
             if (found == IntPtr.Zero) return false;
@@ -239,8 +254,12 @@ namespace EditorBrowser
                 return false;
             }
 
-            // 1) 캡션·테두리 등 데코레이션 strip + WS_POPUP (owner-popup용)
-            //    WS_CHILD는 명시적으로 제거 — DirectX swap chain present에 가려서 안 보이는 문제
+            // === HIDE → reparent/style → SHOW 순서 (검증된 패턴) ===
+
+            // 1) HIDE — surface 재생성을 위한 사전 hide
+            Win32.ShowWindow(found, Win32.SW_HIDE);
+
+            // 2) 스타일 변경: 캡션·테두리 strip + WS_POPUP (owner-popup), WS_CHILD 제거
             var style = (uint)Win32.GetWindowLongPtr(found, Win32.GWL_STYLE).ToInt64();
             const uint Strip = Win32.WS_OVERLAPPED | Win32.WS_CAPTION | Win32.WS_THICKFRAME
                                | Win32.WS_SYSMENU | Win32.WS_MINIMIZEBOX | Win32.WS_MAXIMIZEBOX
@@ -249,25 +268,27 @@ namespace EditorBrowser
             style |= Win32.WS_POPUP | Win32.WS_CLIPSIBLINGS;
             Win32.SetWindowLongPtr(found, Win32.GWL_STYLE, new IntPtr(unchecked((int)style)));
 
-            // 2) 작업 표시줄에서 제거 (TOOLWINDOW), 활성화 시 포커스 빼앗지 않게
+            // 3) EX 스타일: 작업 표시줄에서 제거 (TOOLWINDOW)
             var ex = (uint)Win32.GetWindowLongPtr(found, Win32.GWL_EXSTYLE).ToInt64();
             ex &= ~Win32.WS_EX_APPWINDOW;
             ex |= Win32.WS_EX_TOOLWINDOW;
             Win32.SetWindowLongPtr(found, Win32.GWL_EXSTYLE, new IntPtr(unchecked((int)ex)));
 
-            // 3) owner 설정 — SetParent(child) 가 아니라 GWLP_HWNDPARENT 로 owner-popup 관계
-            //    이렇게 하면 별도 top-level 윈도우로 유지되어 DWM 이 Unity 위에 합성한다.
-            Win32.SetWindowLongPtr(found, Win32.GWLP_HWNDPARENT, _unityHwnd);
+            // 4) owner-swap 의도적으로 생략 — Chrome의 GPU surface는 owner 변경 시점에 깨져
+            //    검은 화면을 유발한다(2026-05-20 EditorBrowser 실측). top-level 그대로 두고
+            //    위치 폴링으로 EditorWindow body 위에 떠 있게 한다. Unity 비활성 시 따라가지
+            //    않는 트레이드오프는 별도 WM_ACTIVATEAPP / foreground 추적으로 V2에서 보강.
 
-            // 4) 스타일 변경 적용 + z-order 최상단
+            // 5) 스타일 변경 적용 + z-order 최상단 (아직 hide 상태)
             Win32.SetWindowPos(found, Win32.HWND_TOP, 0, 0, 0, 0,
                 Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE
                 | Win32.SWP_FRAMECHANGED);
 
             _browserHwnd = found;
             _attached = true;
+            _visible = false;  // 다음 SyncBoundsAbsoluteScreen에서 SHOW + RedrawWindow
 
-            Debug.Log($"{LogPrefix} HWND 부착 완료 hwnd=0x{found.ToInt64():X} parent=0x{_unityHwnd.ToInt64():X}");
+            Debug.Log($"{LogPrefix} HWND 부착 완료 hwnd=0x{found.ToInt64():X} parent=0x{_unityHwnd.ToInt64():X} (HIDE 상태, 다음 sync에서 SHOW)");
             return true;
         }
 
