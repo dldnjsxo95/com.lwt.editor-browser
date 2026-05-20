@@ -47,9 +47,10 @@ namespace EditorBrowser
         private bool _disposed;
         private DateTime _processStartUtc;
 
-        // Chrome init 안정성 보장 — spawn 직후 즉시 reparent 하면 surface가 깨질 수 있어
-        // 최소 이만큼 경과 후에만 attach 시도.
-        private static readonly TimeSpan AttachMinDelay = TimeSpan.FromMilliseconds(600);
+        // Chrome init + 페이지 첫 페인트 완료 보장 — spawn 직후 즉시 reparent 하면 surface가 깨지고
+        // 페이지 로드 전에 옮기면 빈 화면이 됨. 최소 이만큼 경과 후에만 attach 시도.
+        // 3초: Google 검색 페이지 정도면 충분히 로드/페인트 완료되는 시간.
+        private static readonly TimeSpan AttachMinDelay = TimeSpan.FromMilliseconds(3000);
 
         private int _lastX, _lastY, _lastW, _lastH;
 
@@ -105,21 +106,28 @@ namespace EditorBrowser
 
             _lastX = absX; _lastY = absY; _lastW = absW; _lastH = absH;
 
-            // HWND_TOP + NOZORDER 미지정 → top-level z-order 최상단으로 끌어올림
+            // HWND_TOP + SWP_FRAMECHANGED — Chrome 내부 layout 재계산 트리거.
             Win32.SetWindowPos(
                 _browserHwnd, Win32.HWND_TOP,
                 absX, absY, absW, absH,
-                Win32.SWP_NOACTIVATE | Win32.SWP_ASYNCWINDOWPOS);
+                Win32.SWP_NOACTIVATE | Win32.SWP_FRAMECHANGED);
+
+            // Chrome에 WM_SIZE 명시 전송 — SetWindowPos가 보내지 않는 경우 대비. Chrome의 views
+            // 프레임워크가 페이지 재 layout 하게 만든다. lParam = HIWORD:height, LOWORD:width.
+            var sizeLParam = new IntPtr(((absH & 0xFFFF) << 16) | (absW & 0xFFFF));
+            Win32.PostMessage(_browserHwnd, Win32.WM_SIZE,
+                new IntPtr((int)Win32.SIZE_RESTORED), sizeLParam);
 
             if (!_visible)
             {
                 Win32.ShowWindow(_browserHwnd, Win32.SW_SHOWNOACTIVATE);
-                // 첫 SHOW 시 명시적 redraw로 surface paint 트리거
-                Win32.RedrawWindow(_browserHwnd, IntPtr.Zero, IntPtr.Zero,
-                    Win32.RDW_INVALIDATE | Win32.RDW_ERASE | Win32.RDW_FRAME
-                    | Win32.RDW_ALLCHILDREN | Win32.RDW_UPDATENOW);
                 _visible = true;
             }
+
+            // 매 sync 마다 RedrawWindow — Chrome surface invalidate 강제하여 페이지 컨텐츠 paint 트리거
+            Win32.RedrawWindow(_browserHwnd, IntPtr.Zero, IntPtr.Zero,
+                Win32.RDW_INVALIDATE | Win32.RDW_ERASE | Win32.RDW_FRAME
+                | Win32.RDW_ALLCHILDREN | Win32.RDW_UPDATENOW);
         }
 
         public void Hide()
@@ -189,16 +197,19 @@ namespace EditorBrowser
 
             // --app=url : 탭/주소창/메뉴 없는 PWA 앱 모드
             // --user-data-dir : 호스트 일반 프로필과 격리
-            // --window-position : 오프스크린 spawn 후 reparent 완료되면 실제 위치로 이동 → splash flash 방지
-            // --in-process-gpu : GPU 프로세스를 메인 프로세스로 통합 — owner-popup 으로 reparent된
-            //   후에도 surface DC를 유지하기 위함. 별도 GPU 프로세스가 own하는 surface는 reparent
-            //   시점에 끊어져 검은 화면을 유발할 수 있음.
+            // --window-position : 정상 화면 위치에 spawn해서 페이지가 제대로 첫 페인트 되게 한다.
+            //
+            // **중요**: 다음 플래그는 페이지 렌더링 자체를 막아서 흰 화면을 유발하므로 절대 추가 금지
+            //   - --in-process-gpu
+            //   - --disable-gpu, --disable-gpu-compositing
+            //   - --disable-features=CalculateNativeWinOcclusion
+            //   - --disable-backgrounding-occluded-windows, --disable-renderer-backgrounding
+            //   (2026-05-20 실측: TestProfile2로 검증 — 우리 args 그대로의 독립 Chrome도 흰 화면)
             var args =
                 $"--app={url} " +
                 $"--user-data-dir=\"{UserDataDirRoot}\" " +
                 "--no-first-run --no-default-browser-check --disable-popup-blocking " +
-                "--in-process-gpu " +
-                $"--window-position={OffscreenX},{OffscreenY} --window-size=800,600";
+                "--window-position=200,200 --window-size=1024,768";
 
             var psi = new ProcessStartInfo
             {
@@ -254,12 +265,12 @@ namespace EditorBrowser
                 return false;
             }
 
-            // === HIDE → reparent/style → SHOW 순서 (검증된 패턴) ===
+            // === HIDE → 스타일 변경 → SHOW 순서 (검증된 패턴) ===
 
-            // 1) HIDE — surface 재생성을 위한 사전 hide
+            // 1) HIDE — 스타일 변경 동안 깜빡임 방지
             Win32.ShowWindow(found, Win32.SW_HIDE);
 
-            // 2) 스타일 변경: 캡션·테두리 strip + WS_POPUP (owner-popup), WS_CHILD 제거
+            // 2) 캡션·테두리 strip + WS_POPUP (owner-popup용)
             var style = (uint)Win32.GetWindowLongPtr(found, Win32.GWL_STYLE).ToInt64();
             const uint Strip = Win32.WS_OVERLAPPED | Win32.WS_CAPTION | Win32.WS_THICKFRAME
                                | Win32.WS_SYSMENU | Win32.WS_MINIMIZEBOX | Win32.WS_MAXIMIZEBOX
@@ -268,49 +279,47 @@ namespace EditorBrowser
             style |= Win32.WS_POPUP | Win32.WS_CLIPSIBLINGS;
             Win32.SetWindowLongPtr(found, Win32.GWL_STYLE, new IntPtr(unchecked((int)style)));
 
-            // 3) EX 스타일: 작업 표시줄에서 제거 (TOOLWINDOW)
+            // 3) EX 스타일: 작업표시줄에서 제거
             var ex = (uint)Win32.GetWindowLongPtr(found, Win32.GWL_EXSTYLE).ToInt64();
             ex &= ~Win32.WS_EX_APPWINDOW;
             ex |= Win32.WS_EX_TOOLWINDOW;
             Win32.SetWindowLongPtr(found, Win32.GWL_EXSTYLE, new IntPtr(unchecked((int)ex)));
 
-            // 4) owner-swap 의도적으로 생략 — Chrome의 GPU surface는 owner 변경 시점에 깨져
-            //    검은 화면을 유발한다(2026-05-20 EditorBrowser 실측). top-level 그대로 두고
-            //    위치 폴링으로 EditorWindow body 위에 떠 있게 한다. Unity 비활성 시 따라가지
-            //    않는 트레이드오프는 별도 WM_ACTIVATEAPP / foreground 추적으로 V2에서 보강.
-
-            // 5) 스타일 변경 적용 + z-order 최상단 (아직 hide 상태)
+            // 4) 스타일 변경 적용 (위치/사이즈는 다음 SyncBoundsAbsoluteScreen에서 설정)
             Win32.SetWindowPos(found, Win32.HWND_TOP, 0, 0, 0, 0,
                 Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE
                 | Win32.SWP_FRAMECHANGED);
 
             _browserHwnd = found;
             _attached = true;
-            _visible = false;  // 다음 SyncBoundsAbsoluteScreen에서 SHOW + RedrawWindow
+            _visible = false; // 다음 SyncBoundsAbsoluteScreen에서 SHOW
 
-            Debug.Log($"{LogPrefix} HWND 부착 완료 hwnd=0x{found.ToInt64():X} parent=0x{_unityHwnd.ToInt64():X} (HIDE 상태, 다음 sync에서 SHOW)");
+            Debug.Log($"{LogPrefix} HWND 부착 완료 hwnd=0x{found.ToInt64():X} (HIDE 상태, 다음 sync에서 위치 적용 + SHOW)");
             return true;
         }
 
         /// <summary>
-        /// 특정 PID 트리에 속한 Chrome_WidgetWin_* 클래스의 top-level 윈도우 중
-        /// 가장 큰 가시(또는 가시 후보) 윈도우를 반환. 없으면 IntPtr.Zero.
+        /// 특정 PID 트리에 속한 Chrome 메인 앱 윈도우(WS_CAPTION 보유)를 반환.
+        ///
+        /// Chrome --app= 모드는 두 개의 Chrome_WidgetWin_* 윈도우를 순차적으로 만든다.
+        ///   - Chrome_WidgetWin_0 : controller (페이지 렌더링 X, 캡션 없음)
+        ///   - Chrome_WidgetWin_1 : 실제 페이지 메인 앱 (캡션 있음) ← 우리가 어태치해야 할 것
+        ///
+        /// _1 은 _0 보다 늦게 생성된다. 따라서 캡션이 없는 후보(=_0)는 무시하고
+        /// **캡션 있는 메인 앱 윈도우가 나타날 때까지 폴링**해야 한다. 없으면 IntPtr.Zero 반환
+        /// → SyncBoundsAbsoluteScreen 가 다음 틱에 재시도.
         /// </summary>
         private static IntPtr FindChromeAppWindowByPid(uint pid)
         {
             IntPtr best = IntPtr.Zero;
-            int bestArea = 0;
+            long bestArea = -1;
             var classBuf = new StringBuilder(64);
+            int candidateCount = 0;
 
             Win32.EnumWindows((h, _) =>
             {
                 Win32.GetWindowThreadProcessId(h, out var wpid);
-                if (wpid != pid) return true; // 다른 프로세스
-
-                // top-level만 (이 시점엔 아직 reparent 전이라 GetParent가 0이어야 함)
-                if (Win32.GetWindowLongPtr(h, Win32.GWL_STYLE).ToInt64() is var rawStyle
-                    && (((uint)rawStyle) & Win32.WS_CHILD) != 0)
-                    return true; // 이미 child인 윈도우는 우리가 이전에 처리한 것일 수 있음 — 건너뜀
+                if (wpid != pid) return true;
 
                 classBuf.Length = 0;
                 Win32.GetClassName(h, classBuf, classBuf.Capacity);
@@ -318,18 +327,36 @@ namespace EditorBrowser
                 var cn = classBuf.ToString();
                 if (!cn.StartsWith(ChromeWindowClassPrefix, StringComparison.Ordinal)) return true;
 
-                if (!Win32.GetWindowRect(h, out var rc)) return true;
-                var area = (rc.Right - rc.Left) * (rc.Bottom - rc.Top);
-                if (area < 200 * 100) return true; // splash/popup 정도는 무시
+                var rawStyle = (uint)Win32.GetWindowLongPtr(h, Win32.GWL_STYLE).ToInt64();
+                Win32.GetWindowRect(h, out var rc);
+                var w = rc.Right - rc.Left;
+                var hpx = rc.Bottom - rc.Top;
+                var area = w * (long)hpx;
+                bool hasCaption = (rawStyle & Win32.WS_CAPTION) != 0;
+                bool isChild = (rawStyle & Win32.WS_CHILD) != 0;
+                bool vis = Win32.IsWindowVisible(h);
 
-                if (area > bestArea)
+                // 진단 — 모든 Chrome_WidgetWin_* 후보 출력
+                Debug.Log($"{LogPrefix} CAND #{candidateCount++} hwnd=0x{h.ToInt64():X} cls='{cn}' size={w}x{hpx} rect=({rc.Left},{rc.Top}) vis={vis} hasCAPTION={hasCaption} isCHILD={isChild} style=0x{rawStyle:X}");
+
+                if (isChild) return true;
+                if (!hasCaption) return true;
+                if (!vis) return true; // **vis=False 컨테이너 윈도우(_0 1920x1023 등) 거부**
+                if (area < 200 * 100) return true;
+
+                // _1 (Chrome --app= 메인 앱 윈도우 컨벤션) 우선
+                long score = area;
+                if (cn == ChromeWindowClassPrefix + "1") score += 1_000_000_000L;
+
+                if (score > bestArea)
                 {
-                    bestArea = area;
+                    bestArea = score;
                     best = h;
                 }
                 return true;
             }, IntPtr.Zero);
 
+            Debug.Log($"{LogPrefix} FindChromeAppWindowByPid pid={pid} → 0x{best.ToInt64():X} (area={bestArea}, candidates={candidateCount})");
             return best;
         }
 
