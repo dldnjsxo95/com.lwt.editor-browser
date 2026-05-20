@@ -1,0 +1,18 @@
+{
+  "name": "com.pncsolution.editor-browser",
+  "version": "0.1.0",
+  "displayName": "Editor Browser",
+  "description": "Unity 에디터의 도킹 가능한 Tab 창에서 웹 브라우저를 사용할 수 있게 하는 도구. Chrome 설치 시 Chrome 우선, 미설치 시 Edge 폴백.",
+  "unity": "2022.3",
+  "author": {
+    "name": "PnC Solution",
+    "email": "wtlee@pncsolution.co.kr"
+  },
+  "keywords": [
+    "editor",
+    "browser",
+    "tool",
+    "window"
+  ],
+  "type": "tool"
+}
