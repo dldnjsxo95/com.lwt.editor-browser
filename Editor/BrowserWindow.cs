@@ -40,16 +40,24 @@ namespace EditorBrowser
             win.Focus();
         }
 
-        [MenuItem("Window/Editor Browser/Diagnostics", priority = 2011)]
+        // 별도 경로로 분리 — Window/Editor Browser (leaf) 와 Window/Editor Browser/<sub> 가 같은 path에
+        // 동시 존재하면 Unity 메뉴 트리가 leaf 항목을 숨길 수 있음.
+        [MenuItem("Window/Editor Browser Diagnostics", priority = 2012)]
         public static void DumpDiagnostics()
         {
-            var win = Resources.FindObjectsOfTypeAll<BrowserWindow>();
-            if (win == null || win.Length == 0)
+            var wins = Resources.FindObjectsOfTypeAll<BrowserWindow>();
+            if (wins == null || wins.Length == 0)
             {
-                Debug.Log($"{LogPrefix} Diagnostics: BrowserWindow가 열려 있지 않음.");
+                Debug.Log($"{LogPrefix} Diagnostics: BrowserWindow가 열려 있지 않음 — 창을 자동으로 엽니다.");
+                OpenWindow();
+                EditorApplication.delayCall += () =>
+                {
+                    var w = Resources.FindObjectsOfTypeAll<BrowserWindow>();
+                    foreach (var x in w) x._host?.DumpDiagnostics();
+                };
                 return;
             }
-            foreach (var w in win)
+            foreach (var w in wins)
                 w._host?.DumpDiagnostics();
         }
 

@@ -12,6 +12,7 @@ namespace EditorBrowser.Native
         // ----- GetWindowLong / SetWindowLong 인덱스 -----
         public const int GWL_STYLE = -16;
         public const int GWL_EXSTYLE = -20;
+        public const int GWLP_HWNDPARENT = -8;
 
         // ----- 윈도우 스타일 (WS_*) -----
         public const uint WS_OVERLAPPED   = 0x00000000;

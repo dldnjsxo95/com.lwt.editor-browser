@@ -10,12 +10,17 @@ namespace EditorBrowser
 {
     /// <summary>
     /// 외부 브라우저(Chrome/Edge) 프로세스를 별도로 띄우고 그 메인 윈도우를
-    /// Unity 메인 HWND의 WS_CHILD 로 reparent. EditorWindow의 body 영역(스크린 픽셀)에
-    /// 맞춰 매 프레임 위치/크기를 동기화한다.
+    /// Unity 메인 HWND를 owner로 하는 owner-popup 으로 부착. EditorWindow의 body 영역에
+    /// 맞춰 매 프레임 절대 스크린 픽셀로 위치/크기를 동기화한다.
     ///
-    /// Caption(타이틀바·메뉴)은 두 단계로 제거:
+    /// **모델 결정:** WS_CHILD reparent는 Unity 6 DirectX swap chain present에 의해
+    /// 매 프레임 덮어 그려져 보이지 않음. owner-popup 은 별도 top-level 이라 DWM 합성으로
+    /// Unity 위에 올라옴. 트레이드오프로 4가지 증상(Tab 밖/메뉴 가림/탭 전환 깜빡임/
+    /// Unity 비활성 시 튀어나옴)이 활성화되며 별도 미티게이션 필요.
+    ///
+    /// Caption(타이틀바·메뉴) 제거 2단:
     ///   1) chrome.exe --app=&lt;url&gt; 플래그로 브라우저 자체의 chrome(탭/주소창/메뉴) 제거
-    ///   2) Win32 SetWindowLong 로 WS_CAPTION/WS_THICKFRAME 등 잔존 비트 strip + WS_CHILD 부여
+    ///   2) Win32 SetWindowLong 로 WS_CAPTION/WS_THICKFRAME 등 잔존 비트 strip + WS_POPUP 부여
     ///
     /// 본 구현은 Windows 전용. 다른 플랫폼에서는 Start()가 no-op 한다.
     /// </summary>
@@ -88,25 +93,17 @@ namespace EditorBrowser
                 return;
             }
 
-            // 절대 스크린 좌표 → Unity 메인 HWND의 client 좌표
-            var pt = new Win32.POINT { X = absX, Y = absY };
-            if (!Win32.ScreenToClient(_unityHwnd, ref pt))
-            {
-                // 변환 실패는 보통 _unityHwnd가 무효해진 경우 — 재attach 트리거
-                _attached = false;
-                return;
-            }
-
+            // owner-popup 모델 — 좌표는 절대 스크린 픽셀 그대로 사용 (client 변환 X)
             // drift gate: 직전과 동일하면 SetWindowPos 호출 생략
-            if (_visible && pt.X == _lastX && pt.Y == _lastY && absW == _lastW && absH == _lastH)
+            if (_visible && absX == _lastX && absY == _lastY && absW == _lastW && absH == _lastH)
                 return;
 
-            _lastX = pt.X; _lastY = pt.Y; _lastW = absW; _lastH = absH;
+            _lastX = absX; _lastY = absY; _lastW = absW; _lastH = absH;
 
-            // hWndInsertAfter=HWND_TOP, SWP_NOZORDER 미지정 → 형제 중 최상단으로 끌어올림
+            // HWND_TOP + NOZORDER 미지정 → top-level z-order 최상단으로 끌어올림
             Win32.SetWindowPos(
                 _browserHwnd, Win32.HWND_TOP,
-                pt.X, pt.Y, absW, absH,
+                absX, absY, absW, absH,
                 Win32.SWP_NOACTIVATE | Win32.SWP_ASYNCWINDOWPOS);
 
             if (!_visible)
@@ -184,10 +181,14 @@ namespace EditorBrowser
             // --app=url : 탭/주소창/메뉴 없는 PWA 앱 모드
             // --user-data-dir : 호스트 일반 프로필과 격리
             // --window-position : 오프스크린 spawn 후 reparent 완료되면 실제 위치로 이동 → splash flash 방지
+            // --disable-gpu / --disable-gpu-compositing : owner-popup 으로 reparent된 후 Chrome
+            //   GPU compositor가 surface DC를 잃어 검은 화면이 되는 문제 회피. CPU 렌더링 강제.
+            //   (V2에서 surface 보존 가능한 패턴으로 개선 시 제거 가능)
             var args =
                 $"--app={url} " +
                 $"--user-data-dir=\"{UserDataDirRoot}\" " +
                 "--no-first-run --no-default-browser-check --disable-popup-blocking " +
+                "--disable-gpu --disable-gpu-compositing " +
                 $"--window-position={OffscreenX},{OffscreenY} --window-size=800,600";
 
             var psi = new ProcessStartInfo
@@ -238,23 +239,25 @@ namespace EditorBrowser
                 return false;
             }
 
-            // 1) 캡션·테두리 등 데코레이션 strip + WS_CHILD 부여
+            // 1) 캡션·테두리 등 데코레이션 strip + WS_POPUP (owner-popup용)
+            //    WS_CHILD는 명시적으로 제거 — DirectX swap chain present에 가려서 안 보이는 문제
             var style = (uint)Win32.GetWindowLongPtr(found, Win32.GWL_STYLE).ToInt64();
             const uint Strip = Win32.WS_OVERLAPPED | Win32.WS_CAPTION | Win32.WS_THICKFRAME
                                | Win32.WS_SYSMENU | Win32.WS_MINIMIZEBOX | Win32.WS_MAXIMIZEBOX
-                               | Win32.WS_BORDER | Win32.WS_DLGFRAME | Win32.WS_POPUP;
+                               | Win32.WS_BORDER | Win32.WS_DLGFRAME | Win32.WS_CHILD;
             style &= ~Strip;
-            style |= Win32.WS_CHILD | Win32.WS_CLIPSIBLINGS;
+            style |= Win32.WS_POPUP | Win32.WS_CLIPSIBLINGS;
             Win32.SetWindowLongPtr(found, Win32.GWL_STYLE, new IntPtr(unchecked((int)style)));
 
-            // 2) 작업 표시줄에서 제거 (TOOLWINDOW)
+            // 2) 작업 표시줄에서 제거 (TOOLWINDOW), 활성화 시 포커스 빼앗지 않게
             var ex = (uint)Win32.GetWindowLongPtr(found, Win32.GWL_EXSTYLE).ToInt64();
             ex &= ~Win32.WS_EX_APPWINDOW;
             ex |= Win32.WS_EX_TOOLWINDOW;
             Win32.SetWindowLongPtr(found, Win32.GWL_EXSTYLE, new IntPtr(unchecked((int)ex)));
 
-            // 3) reparent
-            Win32.SetParent(found, _unityHwnd);
+            // 3) owner 설정 — SetParent(child) 가 아니라 GWLP_HWNDPARENT 로 owner-popup 관계
+            //    이렇게 하면 별도 top-level 윈도우로 유지되어 DWM 이 Unity 위에 합성한다.
+            Win32.SetWindowLongPtr(found, Win32.GWLP_HWNDPARENT, _unityHwnd);
 
             // 4) 스타일 변경 적용 + z-order 최상단
             Win32.SetWindowPos(found, Win32.HWND_TOP, 0, 0, 0, 0,
