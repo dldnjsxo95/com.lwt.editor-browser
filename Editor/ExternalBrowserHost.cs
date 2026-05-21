@@ -366,16 +366,26 @@ namespace EditorBrowser
             var commandLine = quotedExe + " " + args;
             var startupInfo = new Native.Win32.STARTUPINFO();
             startupInfo.cb = Marshal.SizeOf(startupInfo);
-            const uint flags = Native.Win32.CREATE_BREAKAWAY_FROM_JOB
-                               | Native.Win32.DETACHED_PROCESS
-                               | Native.Win32.CREATE_NEW_PROCESS_GROUP;
+
+            // CREATE_BREAKAWAY_FROM_JOB 의 의도: Unity 가 자식 프로세스를 Job Object 에
+            // 묶어 paint 사이클을 차단할 수 있어서 Chrome 가 Job 밖으로 분리되도록 함
+            // (Unity 6 에서 검증). 그러나 Unity 2022.3 의 Job Object 는 BREAKAWAY 비트
+            // 가 꺼져 있어 이 플래그 자체가 ERROR_ACCESS_DENIED (5) 로 거부됨.
+            //   → 1차: BREAKAWAY 포함 시도 (Unity 6 경로)
+            //   → ERROR_ACCESS_DENIED 시 2차: BREAKAWAY 없이 재시도 (Unity 2022.3 경로)
+            //     이 경우 Job 의 SILENT_BREAKAWAY_OK 비트가 켜져 있으면 자동 분리되고,
+            //     아니면 Chrome 가 Job 안에서 실행 (paint 이슈 가능 — 그때만 추가 진단).
+            const uint baseFlags = Native.Win32.DETACHED_PROCESS
+                                 | Native.Win32.CREATE_NEW_PROCESS_GROUP;
+            const uint breakawayFlags = baseFlags | Native.Win32.CREATE_BREAKAWAY_FROM_JOB;
+
             var ok = Native.Win32.CreateProcess(
                 lpApplicationName: null,
                 lpCommandLine: commandLine,
                 lpProcessAttributes: IntPtr.Zero,
                 lpThreadAttributes: IntPtr.Zero,
                 bInheritHandles: false,
-                dwCreationFlags: flags,
+                dwCreationFlags: breakawayFlags,
                 lpEnvironment: IntPtr.Zero,
                 lpCurrentDirectory: System.IO.Path.GetDirectoryName(info.ExecutablePath) ?? string.Empty,
                 lpStartupInfo: ref startupInfo,
@@ -383,8 +393,32 @@ namespace EditorBrowser
 
             if (!ok)
             {
-                Debug.LogError($"{LogPrefix} CreateProcess 실패 (lastError={Marshal.GetLastWin32Error()})");
-                return;
+                int err = Marshal.GetLastWin32Error();
+                if (err == 5) // ERROR_ACCESS_DENIED — Job Object breakaway 거부
+                {
+                    Debug.LogWarning($"{LogPrefix} CREATE_BREAKAWAY_FROM_JOB 거부 (Job Object 제한). breakaway 없이 fallback 재시도.");
+                    ok = Native.Win32.CreateProcess(
+                        lpApplicationName: null,
+                        lpCommandLine: commandLine,
+                        lpProcessAttributes: IntPtr.Zero,
+                        lpThreadAttributes: IntPtr.Zero,
+                        bInheritHandles: false,
+                        dwCreationFlags: baseFlags,
+                        lpEnvironment: IntPtr.Zero,
+                        lpCurrentDirectory: System.IO.Path.GetDirectoryName(info.ExecutablePath) ?? string.Empty,
+                        lpStartupInfo: ref startupInfo,
+                        lpProcessInformation: out procInfo);
+                    if (!ok)
+                    {
+                        Debug.LogError($"{LogPrefix} CreateProcess fallback 도 실패 (lastError={Marshal.GetLastWin32Error()})");
+                        return;
+                    }
+                }
+                else
+                {
+                    Debug.LogError($"{LogPrefix} CreateProcess 실패 (lastError={err})");
+                    return;
+                }
             }
 
             // 핸들 즉시 close — process 는 detached로 계속 살아 있음

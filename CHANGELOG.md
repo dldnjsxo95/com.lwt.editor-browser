@@ -3,6 +3,15 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.2.2] - 2026-05-21
+
+### Fixed
+- Unity 2022.3 compatibility: `CreateProcess` failed with `ERROR_ACCESS_DENIED`
+  (lastError=5) because the Unity 2022.3 Job Object disallows
+  `CREATE_BREAKAWAY_FROM_JOB`. The host now retries without that flag when the
+  first attempt is rejected with ACCESS_DENIED. Unity 6 keeps using breakaway
+  as before.
+
 ## [0.2.1] - 2026-05-21
 
 ### Fixed
