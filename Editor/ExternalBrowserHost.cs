@@ -246,6 +246,20 @@ namespace EditorBrowser
                 winX, winY, winW, winH,
                 Win32.SWP_NOACTIVATE | Win32.SWP_FRAMECHANGED);
 
+            // === DWM invisible border 영역을 visible 에서 제외 ===
+            // window 가 body 보다 좌/우/하 _ib* 만큼 큼 → 그 영역이 OS-level 로 Tab 경계
+            // 밖으로 튀어나가 다른 panel/splitter 위로 침범하여 사용자에 노출. SetWindowRgn
+            // 으로 visible 영역을 client area 와 동일하게 제한 → cut-out 영역은 transparent
+            // (Unity main HWND 의 swap chain 결과 보임, hit-test 통과).
+            // window 좌표계 기준: client area = (_ibLeft, _ibTop) ~ (winW - _ibRight, winH - _ibBottom)
+            // _ibTop 은 항상 0 (DWM 상단 border 없음).
+            if (_ibLeft > 0 || _ibRight > 0 || _ibBottom > 0)
+            {
+                var rgn = Win32.CreateRectRgn(_ibLeft, 0, winW - _ibRight, winH - _ibBottom);
+                Win32.SetWindowRgn(_browserHwnd, rgn, true);
+                // rgn 소유권은 SetWindowRgn 호출 후 OS 로 이전 — DeleteObject 금지.
+            }
+
             // invisible border 측정 — 다음 sync 에서 사용 (1 frame 지연 허용).
             // GetWindowRect - GetClientRect 차이 + ClientToScreen offset 으로 계산.
             if (Win32.GetWindowRect(_browserHwnd, out var wrCheck)
