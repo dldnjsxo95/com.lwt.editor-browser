@@ -361,8 +361,11 @@ namespace EditorBrowser
             ex |= Win32.WS_EX_TOOLWINDOW;
             Win32.SetWindowLongPtr(found, Win32.GWL_EXSTYLE, new IntPtr(unchecked((int)ex)));
 
-            // 4) 스타일 변경 적용 + HWND_TOPMOST 로 영구 최상단 (위치/사이즈는 다음 sync에서 설정)
-            Win32.SetWindowPos(found, Win32.HWND_TOPMOST, 0, 0, 0, 0,
+            // 4) 스타일 변경 적용 (위치/사이즈는 다음 sync에서 설정).
+            // HWND_TOPMOST 안 씀 — 사용자 요구: Unity 활성 시에도 다른 프로그램에 가려져야.
+            // Chrome 은 일반 NOTOPMOST top-level. 같은 dock 안 다른 Tab 선택 시 BrowserWindow 가
+            // body 비활성 감지하여 Chrome Hide.
+            Win32.SetWindowPos(found, Win32.HWND_TOP, 0, 0, 0, 0,
                 Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE
                 | Win32.SWP_FRAMECHANGED);
 

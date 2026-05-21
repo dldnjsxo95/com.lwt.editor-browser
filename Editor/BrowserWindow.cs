@@ -180,22 +180,9 @@ namespace EditorBrowser
 
         private void OnWinEvent(IntPtr hHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwThread, uint dwTime)
         {
-            // LOCATIONCHANGE 는 너무 자주 발생하므로 idObject == 0 (윈도우 자체) 만.
-            if (idObject != 0) return;
-            // **thread 안전성**: callback 은 OUTOFCONTEXT 라 별도 thread 가능 — Unity API 호출 금지.
-            // 단지 Win32 SetWindowPos 로 Chrome HWND 의 z-order(TOPMOST) 만 유지 → drag modal loop
-            // 중에도 Chrome 이 다른 윈도우에 가려지지 않음. 위치/사이즈 추종은 메인 thread sync 에서.
-            var browserHwnd = _host?.BrowserHwnd ?? IntPtr.Zero;
-            if (browserHwnd == IntPtr.Zero) return;
-            try
-            {
-                EditorBrowser.Native.Win32.SetWindowPos(
-                    browserHwnd, EditorBrowser.Native.Win32.HWND_TOPMOST, 0, 0, 0, 0,
-                    EditorBrowser.Native.Win32.SWP_NOMOVE
-                    | EditorBrowser.Native.Win32.SWP_NOSIZE
-                    | EditorBrowser.Native.Win32.SWP_NOACTIVATE);
-            }
-            catch { /* native callback 에선 예외 무시 */ }
+            // 무동작. 본래 z-order 유지용이었으나 사용자 요구: Chrome 은 다른 프로그램에 자연스럽게
+            // 가려지는 NOTOPMOST 유지. 추종은 메인 thread sync(EditorApplication.update + schedule
+            // .Execute + GeometryChangedEvent) 에서 충분.
         }
 
         private void DisposeHost()
@@ -342,6 +329,13 @@ namespace EditorBrowser
         private (int x, int y, int w, int h, bool valid) ComputeBodyAbsRect()
         {
             if (_body == null) { _validFrameCount = 0; return (0, 0, 0, 0, false); }
+
+            // **Tab inactive 감지**: 같은 dock 안에서 다른 Tab(Console 등) 이 선택되면
+            // _body 가 panel 에서 분리되거나 display:None 처리됨. Chrome 자동 hide.
+            if (_body.panel == null) { _validFrameCount = 0; return (0, 0, 0, 0, false); }
+            if (_body.resolvedStyle.display == DisplayStyle.None) { _validFrameCount = 0; return (0, 0, 0, 0, false); }
+            if (_body.resolvedStyle.visibility == Visibility.Hidden) { _validFrameCount = 0; return (0, 0, 0, 0, false); }
+
             var bound = _body.worldBound;
             if (float.IsNaN(bound.width) || float.IsNaN(bound.height)
                 || bound.width <= 1f || bound.height <= 1f)
@@ -397,19 +391,15 @@ namespace EditorBrowser
         /// 매 에디터 틱마다 body 영역의 스크린 픽셀 RECT를 계산해 외부 브라우저 HWND를
         /// 동기화한다. body가 안 보이는 상태(0 사이즈, 탭 비활성 등)면 hide.
         /// </summary>
-        private bool _wasUnityForeground = true;
-
         private void OnEditorUpdate()
         {
             if (_host == null || _body == null) return;
 
-            // Unity(또는 Chrome 자체)가 foreground 일 때만 TOPMOST 유지. 다른 프로그램이
-            // foreground 면 NOTOPMOST 로 toggle 하여 사용자 다른 작업 시 Chrome 이 가리지 않게.
-            UpdateTopmostByForeground();
-
             var (absX, absY, absW, absH, valid) = ComputeBodyAbsRect();
             if (!valid)
             {
+                // body 가 비정상(의심 winPos / Tab inactive / 비표시) → Chrome 즉시 hide.
+                // 사용자가 같은 dock 의 다른 Tab(Console 등) 을 선택해도 자동으로 Chrome 사라짐.
                 _host.Hide();
                 return;
             }
@@ -423,36 +413,6 @@ namespace EditorBrowser
             }
 
             _host.SyncBoundsAbsoluteScreen(absX, absY, absW, absH);
-        }
-
-        private void UpdateTopmostByForeground()
-        {
-            var bh = _host?.BrowserHwnd ?? IntPtr.Zero;
-            if (bh == IntPtr.Zero) return;
-
-            var fg = EditorBrowser.Native.Win32.GetForegroundWindow();
-            EditorBrowser.Native.Win32.GetWindowThreadProcessId(fg, out var fgPid);
-
-            var unityPid = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
-            var chromePid = (uint)(_host.ProcessId);
-            bool isOurContext = (fgPid == unityPid) || (chromePid > 0 && fgPid == chromePid);
-
-            // 상태 변화 시점에만 z-order toggle — paint cycle 영향 최소화
-            if (isOurContext == _wasUnityForeground) return;
-            _wasUnityForeground = isOurContext;
-
-            var hWndInsertAfter = isOurContext
-                ? EditorBrowser.Native.Win32.HWND_TOPMOST
-                : EditorBrowser.Native.Win32.HWND_NOTOPMOST;
-
-            EditorBrowser.Native.Win32.SetWindowPos(
-                bh, hWndInsertAfter, 0, 0, 0, 0,
-                EditorBrowser.Native.Win32.SWP_NOMOVE
-                | EditorBrowser.Native.Win32.SWP_NOSIZE
-                | EditorBrowser.Native.Win32.SWP_NOACTIVATE);
-
-            Debug.Log($"{LogPrefix} Foreground={(isOurContext ? "Unity/Chrome" : "Other")} → " +
-                      $"{(isOurContext ? "TOPMOST" : "NOTOPMOST")}");
         }
     }
 }
