@@ -88,6 +88,8 @@ namespace EditorBrowser
                 w._host?.DumpDiagnostics();
         }
 
+        private IVisualElementScheduledItem _syncSchedule;
+
         private void OnEnable()
         {
             _host = new ExternalBrowserHost();
@@ -101,6 +103,8 @@ namespace EditorBrowser
             EditorApplication.update -= OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload -= DisposeHost;
             EditorApplication.quitting -= DisposeHost;
+            _syncSchedule?.Pause();
+            _syncSchedule = null;
             DisposeHost();
         }
 
@@ -170,6 +174,12 @@ namespace EditorBrowser
             root.Add(_body);
             root.Add(statusBar);
 
+            // **드래그 추종 강화**: EditorApplication.update 가 Tab drag modal loop 중 stall 되는 경우
+            // 대비. UI Toolkit scheduler 로 16ms 빈도 동기화 + body GeometryChangedEvent 로 layout
+            // 변화 즉시 반응. drag 중에도 Chrome 이 Tab 영역을 떠나지 않게 보장.
+            _syncSchedule = root.schedule.Execute(OnEditorUpdate).Every(16);
+            _body.RegisterCallback<GeometryChangedEvent>(OnBodyGeometryChanged);
+
             // 초기 진입 — body 가 layout 된 후 (첫 OnEditorUpdate) 에 spawn 한다.
             // CreateGUI 시점엔 worldBound 가 아직 NaN 일 수 있어 spawn 위치 결정 불가.
             _pendingInitialUrl = UrlResolver.DefaultHomepage;
@@ -177,6 +187,12 @@ namespace EditorBrowser
             _urlField.SetValueWithoutNotify(_pendingInitialUrl);
             _statusLabel.text = $"Loading: {_pendingInitialUrl}";
             UpdateNavButtonsState();
+        }
+
+        private void OnBodyGeometryChanged(GeometryChangedEvent _)
+        {
+            // body 의 layout 이 변경되면 즉시 동기화 (Tab 이동/리사이즈/dock 변경 시 발생)
+            OnEditorUpdate();
         }
 
         private void OnUrlFieldKeyDown(KeyDownEvent evt)
