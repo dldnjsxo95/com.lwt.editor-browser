@@ -429,11 +429,9 @@ namespace EditorBrowser
             toolbar.Add(_urlField);
 
             // ---- 본문 (외부 브라우저 HWND가 이 영역에 reparent됨) ----
-            // 배경색 #383838 — Chrome 이 그려지기 전 placeholder 영역 / DWM invisible border
-            // 7px / Tab 전환 깜빡임 순간에 노출. Unity Editor 다크 테마의 dock 색조와 일치.
             _body = new VisualElement { name = "browser-body" };
             _body.style.flexGrow = 1f;
-            _body.style.backgroundColor = new StyleColor(new Color(0x38 / 255f, 0x38 / 255f, 0x38 / 255f));
+            _body.style.backgroundColor = new StyleColor(new Color(0.12f, 0.12f, 0.12f));
 
             // 임베드 전/실패 시 보일 안내 라벨 (브라우저가 위로 올라오면 가려짐)
             var placeholder = new Label("브라우저 로딩 중...");
