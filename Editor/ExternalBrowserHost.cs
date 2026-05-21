@@ -63,6 +63,13 @@ namespace EditorBrowser
 
         private int _lastX, _lastY, _lastW, _lastH;
 
+        // Windows 10/11 DWM 이 모든 top-level window 에 추가하는 invisible resize border.
+        // WS_THICKFRAME strip 후에도 GetClientRect 는 GetWindowRect 보다 좌/우/하단 ~7px
+        // 작음 (DPI 100% 기준). Chrome 페이지는 client area 에 그려지므로 body 안쪽으로
+        // 그만큼 마진 발생. 매 sync 에서 측정 → 다음 sync 에 window 를 그만큼 키워서
+        // client area = body 영역. 첫 호출 시 측정값 없으므로 0 (한 frame 마진).
+        private int _ibLeft, _ibRight, _ibBottom;
+
         // === Background thread enforce — drag modal loop 우회 ===
         // 메인 thread 가 차단되어도 background watchdog 가 매 20ms 이 위치 강제 유지.
         // Unity dock system 또는 OS 가 Chrome HWND 옮겨도 즉시 SetWindowPos 복귀.
@@ -206,40 +213,27 @@ namespace EditorBrowser
 
             // owner-popup 모델 — 좌표는 절대 스크린 픽셀 그대로 사용 (client 변환 X)
             //
-            // drift gate: 위치/사이즈가 직전과 동일하면 무거운 SetWindowPos 는 생략하되,
+            // === Chrome client area 가 body 영역과 정확 일치하도록 window 확장 ===
+            // DWM invisible resize border (좌/우/하 ~7px) 만큼 window 를 키워 페이지가
+            // 그려지는 client area 가 body 와 일치. _ib* 값은 직전 sync 에서 측정.
+            // 상단은 별개 — fake titlebar (32px) 가 client area 안에 그려지므로 위로
+            // 확장은 안 함 (확장 시 toolbar 가림 — 검증 2026-05-21).
+            var winX = absX - _ibLeft;
+            var winY = absY;
+            var winW = absW + _ibLeft + _ibRight;
+            var winH = absH + _ibBottom;
+
+            // drift gate (window 좌표 기준): 위치/사이즈가 직전과 동일하면 무거운 SetWindowPos
+            // 생략. _ib* 변경 시 winX/Y/W/H 가 변하므로 자동으로 gate 통과 → SetWindowPos 호출.
             // **HWND_TOPMOST 만은 매 sync 유지** — 사용자가 Tab 을 잡고 움직이면 BrowserWindow
-            // floating HWND 가 활성화되어 일반 top-level 인 Chrome HWND 를 가린다. TOPMOST 로
-            // 설정하면 활성화 무관하게 항상 모든 윈도우 위.
-            // SetWindowPos(HWND_TOPMOST, NOMOVE+NOSIZE+NOACTIVATE) 는 이미 topmost 인 윈도우엔
-            // no-op 이므로 paint 사이클을 깨뜨리지 않는다.
-            if (_visible && absX == _lastX && absY == _lastY && absW == _lastW && absH == _lastH)
+            // floating HWND 가 활성화되어 일반 top-level 인 Chrome HWND 를 가린다.
+            if (_visible && winX == _lastX && winY == _lastY && winW == _lastW && winH == _lastH)
             {
-                // z-order TOP 유지만 (WS_EX_TOPMOST 비트는 BrowserWindow 가 foreground 추적으로 관리).
-                // HWND_TOPMOST 매번 호출하면 Unity 비활성 시에도 강제 topmost 가 되어 다른 프로그램을 가린다.
                 Win32.SetWindowPos(_browserHwnd, Win32.HWND_TOP, 0, 0, 0, 0,
                     Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
                 return;
             }
-
-            _lastX = absX; _lastY = absY; _lastW = absW; _lastH = absH;
-
-            // === Chrome window 영역을 body 와 정확히 일치 (확장/cut-out 없음) ===
-            // 시도했던 두 가지 cut-out 전략:
-            //   (1) 아래로 확장 + 위 cut-out → Chrome 페이지가 body 아래로 32px 튀어나와
-            //       statusBar 가림.
-            //   (2) 위로 확장 + 위 cut-out → cut-out 영역(=toolbar 영역) 이 transparent 여야
-            //       toolbar 가 보여야 하나, Chrome owner-popup 의 OS-level 점유 + Unity D3D
-            //       swap chain + DWM 합성 관계로 실제로는 toolbar 가 시각적으로 가려짐.
-            // 두 케이스 모두 사용자가 "한쪽이 가려짐" 으로 인식.
-            //
-            // **현재 전략**: window 영역을 body 와 정확 일치 시키고 SetWindowRgn 호출 안 함.
-            // Chrome --app= 모드의 PWA mini titlebar (client area 상단 ~32px) 가 body 상단
-            // 에 그대로 보임 — 그러나 회색의 작은 titlebar 라 페이지의 일부처럼 자연스럽고,
-            // toolbar / statusBar 둘 다 보존됨. (검증 2026-05-21)
-            var winX = absX;
-            var winY = absY;
-            var winW = absW;
-            var winH = absH;
+            _lastX = winX; _lastY = winY; _lastW = winW; _lastH = winH;
 
             // background enforce thread 가 읽을 마지막 valid 위치 저장.
             s_enforceX = winX; s_enforceY = winY; s_enforceW = winW; s_enforceH = winH;
@@ -251,6 +245,27 @@ namespace EditorBrowser
                 _browserHwnd, Win32.HWND_TOP,
                 winX, winY, winW, winH,
                 Win32.SWP_NOACTIVATE | Win32.SWP_FRAMECHANGED);
+
+            // invisible border 측정 — 다음 sync 에서 사용 (1 frame 지연 허용).
+            // GetWindowRect - GetClientRect 차이 + ClientToScreen offset 으로 계산.
+            if (Win32.GetWindowRect(_browserHwnd, out var wrCheck)
+                && Win32.GetClientRect(_browserHwnd, out var crCheck))
+            {
+                var ori = new Win32.POINT { X = 0, Y = 0 };
+                if (Win32.ClientToScreen(_browserHwnd, ref ori))
+                {
+                    int leftB = ori.X - wrCheck.Left;
+                    int topB = ori.Y - wrCheck.Top;
+                    int totalW = wrCheck.Right - wrCheck.Left;
+                    int totalH = wrCheck.Bottom - wrCheck.Top;
+                    int rightB = totalW - leftB - crCheck.Right;
+                    int bottomB = totalH - topB - crCheck.Bottom;
+                    // 음수/이상값 방어 (Chrome 재시작 / 일시적 race)
+                    if (leftB >= 0 && leftB < 50) _ibLeft = leftB;
+                    if (rightB >= 0 && rightB < 50) _ibRight = rightB;
+                    if (bottomB >= 0 && bottomB < 50) _ibBottom = bottomB;
+                }
+            }
 
             // Chrome에 WM_SIZE 명시 전송
             var sizeLParam = new IntPtr(((winH & 0xFFFF) << 16) | (winW & 0xFFFF));
