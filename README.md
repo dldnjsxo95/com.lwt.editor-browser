@@ -29,12 +29,12 @@ Add this line to your project's `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.lwt.editor-browser": "https://github.com/dldnjsxo95/com.lwt.editor-browser.git#v0.2.0"
+    "com.lwt.editor-browser": "https://github.com/dldnjsxo95/com.lwt.editor-browser.git#v0.2.1"
   }
 }
 ```
 
-The `#v0.2.0` tag locks the version. Omit it to always follow `main`.
+The `#v0.2.1` tag locks the version. Omit it to always follow `main`.
 
 Unity Package Manager fetches and compiles the package automatically. The
 menu item `Window > Editor Browser` and the shortcut `Shift + Alt + W`

@@ -3,6 +3,14 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.2.1] - 2026-05-21
+
+### Fixed
+- Added `LICENSE.meta` so Unity stops emitting "no meta file, but it's in an
+  immutable folder. The asset will be ignored." warnings when the package is
+  imported as a UPM dependency. Unity requires a `.meta` file next to every
+  asset inside an immutable package folder.
+
 ## [0.2.0] - 2026-05-21
 
 ### Added
