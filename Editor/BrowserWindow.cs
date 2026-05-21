@@ -1,3 +1,4 @@
+using System;
 using UnityEditor;
 using UnityEditor.UIElements;
 using UnityEngine;
@@ -67,6 +68,33 @@ namespace EditorBrowser
             Debug.Log($"{LogPrefix} TestResize: {p} → {w.position}");
         }
 
+        // 사용자 drag 시뮬레이션: 100ms 간격으로 5번 position 변경 + Chrome 추종 검증
+        [MenuItem("Window/Editor Browser Test Drag Sim", priority = 2015)]
+        public static void TestDragSim()
+        {
+            var wins = Resources.FindObjectsOfTypeAll<BrowserWindow>();
+            if (wins == null || wins.Length == 0) return;
+            var w = wins[0];
+            var start = w.position;
+            Debug.Log($"{LogPrefix} TestDragSim 시작: {start}");
+            int step = 0;
+            EditorApplication.CallbackFunction tick = null;
+            var last = EditorApplication.timeSinceStartup;
+            tick = () => {
+                if (EditorApplication.timeSinceStartup - last < 0.1) return;
+                last = EditorApplication.timeSinceStartup;
+                if (step++ >= 5) {
+                    EditorApplication.update -= tick;
+                    Debug.Log($"{LogPrefix} TestDragSim 종료: {w.position}");
+                    return;
+                }
+                var p = w.position;
+                w.position = new Rect(p.x + 30f, p.y + 20f, p.width, p.height);
+                Debug.Log($"{LogPrefix} TestDragSim step {step}: → ({w.position.x},{w.position.y})");
+            };
+            EditorApplication.update += tick;
+        }
+
         // 별도 경로로 분리 — Window/Editor Browser (leaf) 와 Window/Editor Browser/<sub> 가 같은 path에
         // 동시 존재하면 Unity 메뉴 트리가 leaf 항목을 숨길 수 있음.
         [MenuItem("Window/Editor Browser Diagnostics", priority = 2012)]
@@ -89,6 +117,8 @@ namespace EditorBrowser
         }
 
         private IVisualElementScheduledItem _syncSchedule;
+        private IntPtr _winEventHook = IntPtr.Zero;
+        private EditorBrowser.Native.Win32.WinEventDelegate _winEventDelegate; // GC root
 
         private void OnEnable()
         {
@@ -96,16 +126,76 @@ namespace EditorBrowser
             EditorApplication.update += OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload += DisposeHost;
             EditorApplication.quitting += DisposeHost;
+            InstallWinEventHook();
         }
 
         private void OnDisable()
         {
+            UninstallWinEventHook();
             EditorApplication.update -= OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload -= DisposeHost;
             EditorApplication.quitting -= DisposeHost;
             _syncSchedule?.Pause();
             _syncSchedule = null;
             DisposeHost();
+        }
+
+        /// <summary>
+        /// Unity 프로세스의 윈도우 위치 변화(LOCATIONCHANGE) 와 drag 시작/종료 이벤트를
+        /// native callback 으로 받는다. EditorApplication.update 가 drag modal loop 중
+        /// stall 되어도 이 callback 은 호출됨.
+        /// </summary>
+        private void InstallWinEventHook()
+        {
+            if (_winEventHook != IntPtr.Zero) return;
+            try
+            {
+                var unityPid = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+                _winEventDelegate = OnWinEvent; // GC 방지를 위해 필드로 보관
+                _winEventHook = EditorBrowser.Native.Win32.SetWinEventHook(
+                    EditorBrowser.Native.Win32.EVENT_SYSTEM_MOVESIZESTART,
+                    EditorBrowser.Native.Win32.EVENT_OBJECT_LOCATIONCHANGE,
+                    IntPtr.Zero,
+                    _winEventDelegate,
+                    unityPid,
+                    0,
+                    EditorBrowser.Native.Win32.WINEVENT_OUTOFCONTEXT);
+                Debug.Log($"{LogPrefix} WinEventHook 등록 hook=0x{_winEventHook.ToInt64():X} pid={unityPid}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"{LogPrefix} WinEventHook 등록 실패: {ex.Message}");
+            }
+        }
+
+        private void UninstallWinEventHook()
+        {
+            if (_winEventHook != IntPtr.Zero)
+            {
+                try { EditorBrowser.Native.Win32.UnhookWinEvent(_winEventHook); } catch { }
+                _winEventHook = IntPtr.Zero;
+            }
+            _winEventDelegate = null;
+        }
+
+        private void OnWinEvent(IntPtr hHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwThread, uint dwTime)
+        {
+            // LOCATIONCHANGE 는 너무 자주 발생하므로 idObject == 0 (윈도우 자체) 만.
+            if (idObject != 0) return;
+            // **thread 안전성**: callback 은 OUTOFCONTEXT 라 별도 thread 가능 — Unity API 호출 금지.
+            // 단지 Win32 SetWindowPos 로 Chrome HWND 의 z-order(TOPMOST) 만 유지 → drag modal loop
+            // 중에도 Chrome 이 다른 윈도우에 가려지지 않음. 위치/사이즈 추종은 메인 thread sync 에서.
+            var browserHwnd = _host?.BrowserHwnd ?? IntPtr.Zero;
+            if (browserHwnd == IntPtr.Zero) return;
+            try
+            {
+                EditorBrowser.Native.Win32.SetWindowPos(
+                    browserHwnd, EditorBrowser.Native.Win32.HWND_TOPMOST, 0, 0, 0, 0,
+                    EditorBrowser.Native.Win32.SWP_NOMOVE
+                    | EditorBrowser.Native.Win32.SWP_NOSIZE
+                    | EditorBrowser.Native.Win32.SWP_NOACTIVATE);
+            }
+            catch { /* native callback 에선 예외 무시 */ }
         }
 
         private void DisposeHost()

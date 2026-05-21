@@ -234,5 +234,26 @@ namespace EditorBrowser.Native
         /// <summary>SetWindowRgn — 윈도우의 visible region 설정. bRedraw=true 권장. hRgn 소유권은 OS로 이전.</summary>
         [DllImport("user32.dll", SetLastError = true)]
         public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, [MarshalAs(UnmanagedType.Bool)] bool bRedraw);
+
+        // ----- WinEventHook (user32) — drag modal loop 중에도 호출되는 native callback -----
+        public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+        public const uint EVENT_SYSTEM_MOVESIZESTART  = 0x000A;
+        public const uint EVENT_SYSTEM_MOVESIZEEND    = 0x000B;
+        public const uint EVENT_SYSTEM_FOREGROUND     = 0x0003;
+        public const uint WINEVENT_OUTOFCONTEXT       = 0x0000;
+        public const uint WINEVENT_SKIPOWNPROCESS     = 0x0002;
+
+        public delegate void WinEventDelegate(
+            IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+            int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr SetWinEventHook(
+            uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
+            WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
     }
 }
