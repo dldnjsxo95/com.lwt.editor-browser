@@ -93,9 +93,11 @@ namespace EditorBrowser
         public int ProcessId => _chromePid > 0 ? _chromePid : (_process?.Id ?? 0);
 
         /// <summary>
-        /// 새 URL 로 네비게이트 — Tab body 영역의 절대 스크린 좌표/사이즈를 전달하여
-        /// **spawn 시점부터** Chrome 윈도우를 그 위치에 띄운다. 좌측 상단 spawn 후 점프
-        /// 현상 제거.
+        /// 새 URL 로 네비게이트.
+        /// - Chrome 가 이미 살아 있으면 CDP (`Page.navigate`) 로 같은 프로세스에서
+        ///   페이지만 교체 → 프로세스 restart 없이 즉시 이동. URL 입력 후 빈 화면
+        ///   깜빡임 / 1-2초 지연 제거.
+        /// - 처음 호출이거나 Chrome 가 죽었으면 새 프로세스 spawn (좌표 정확).
         /// </summary>
         public void Navigate(string url, int bodyX, int bodyY, int bodyW, int bodyH)
         {
@@ -107,8 +109,77 @@ namespace EditorBrowser
                 return;
             }
 
-            if (IsAlive) DisposeProcess();
+            if (IsAlive)
+            {
+                // CDP 호출은 HTTP + WebSocket sync wait — main thread 차단 회피 위해
+                // background Task. 결과 미수신 fire-and-forget (Chrome 응답은 ~50-200ms).
+                var captured = url;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try { CdpNavigate(captured); }
+                    catch { /* main thread 외 unity log unsafe — 조용히 무시 */ }
+                });
+                return;
+            }
+
             Start(url, bodyX, bodyY, bodyW, bodyH);
+        }
+
+        /// <summary>
+        /// Chrome DevTools Protocol `Page.navigate` 로 현재 페이지 URL 교체.
+        /// `--remote-debugging-port=9222` 가 spawn args 에 포함되어 있음을 전제.
+        /// background thread 에서 호출 — Unity API 호출 금지.
+        /// </summary>
+        private static bool CdpNavigate(string url)
+        {
+            // 1) page targets 조회 — webSocketDebuggerUrl 추출
+            // **중요**: localhost 사용 시 .NET 의 DNS resolver 가 IPv6(::1) 를 먼저 시도하고
+            // 2 초 후 IPv4 로 fallback 하는 케이스가 있어 ConnectAsync 가 매번 ~2030ms 지연.
+            // 127.0.0.1 직접 사용으로 3-4ms 로 단축 (500-1000 배). Chrome /json/list 응답의
+            // webSocketDebuggerUrl 도 Host header 따라 127.0.0.1 로 반환되므로 별도 replace
+            // 불필요하지만 방어적으로 한 번 더 치환.
+            string listJson;
+            var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://127.0.0.1:9222/json/list");
+            req.Timeout = 1500;
+            using (var resp = (System.Net.HttpWebResponse)req.GetResponse())
+            using (var sr = new System.IO.StreamReader(resp.GetResponseStream()))
+            {
+                listJson = sr.ReadToEnd();
+            }
+            var m = System.Text.RegularExpressions.Regex.Match(
+                listJson, "\"webSocketDebuggerUrl\"\\s*:\\s*\"(ws://[^\"]+)\"");
+            if (!m.Success) return false;
+            var wsUrl = m.Groups[1].Value.Replace("ws://localhost:", "ws://127.0.0.1:");
+
+            // 2) WebSocket 연결 + Page.navigate 전송 + close
+            // ConnectAsync 가 종종 2 초 이상 걸림 (특히 첫 호출 / Chrome busy). 5 초 timeout
+            // + Wait 반환 후 State.Open 명시 확인. background Task 에서 호출되므로 main
+            // thread 영향 없음.
+            using (var ws = new System.Net.WebSockets.ClientWebSocket())
+            {
+                var connectTask = ws.ConnectAsync(new System.Uri(wsUrl), System.Threading.CancellationToken.None);
+                if (!connectTask.Wait(5000)) return false;
+                if (ws.State != System.Net.WebSockets.WebSocketState.Open) return false;
+
+                var msg = "{\"id\":1,\"method\":\"Page.navigate\",\"params\":{\"url\":\""
+                          + EscapeJsonString(url) + "\"}}";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(msg);
+                if (!ws.SendAsync(new System.ArraySegment<byte>(bytes),
+                    System.Net.WebSockets.WebSocketMessageType.Text, true,
+                    System.Threading.CancellationToken.None).Wait(3000))
+                    return false;
+
+                try { ws.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                          "", System.Threading.CancellationToken.None).Wait(500); }
+                catch { /* close 실패 무시 */ }
+            }
+            return true;
+        }
+
+        private static string EscapeJsonString(string s)
+        {
+            // URL 은 보통 quote/backslash 없지만 방어
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
 
         /// <summary>
