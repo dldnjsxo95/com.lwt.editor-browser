@@ -1,8 +1,8 @@
 {
   "name": "com.lwt.editor-browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "Editor Browser",
-  "description": "Unity 에디터의 도킹 가능한 Tab 창에서 웹 브라우저를 사용할 수 있게 하는 도구. Chrome 설치 시 Chrome 우선, 미설치 시 Edge 폴백.",
+  "description": "A web browser that lives inside the Unity Editor as a dockable Tab. Uses installed Chrome (--app= PWA mode) with Edge fallback on Windows.",
   "unity": "2022.3",
   "author": {
     "name": "LEEWONTAE",

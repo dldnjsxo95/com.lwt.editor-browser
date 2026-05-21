@@ -1,25 +1,64 @@
 # Changelog
 
-본 패키지는 [Keep a Changelog](https://keepachangelog.com/) 규약과 [SemVer](https://semver.org/)를 따른다.
+This package follows [Keep a Changelog](https://keepachangelog.com/) and
+[SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-05-21
 
 ### Added
-- `BrowserWindow` EditorWindow — 툴바(뒤로/앞으로/새로고침/URL), 임베드 본문 영역, 상태바
-- `UrlResolver` — Enter 입력을 URL/도메인/검색 쿼리로 분기하는 순수 함수
-- `BrowserHistory` — 뒤로/앞으로 네비게이션 상태 관리
-- 메뉴 항목 `Window > Editor Browser` + 단축키 Shift+Alt+W
-- 기본 홈페이지 `https://www.google.com/`
-- `BrowserDetector` — Chrome 우선, Edge 폴백 (알려진 설치 경로 기반 감지)
-- `ExternalBrowserHost` — Chrome/Edge 별도 프로세스 spawn + WS_CHILD reparent로 Unity EditorWindow에 임베드
-  - `--app=<url>` 플래그로 Chrome chrome(탭/주소창/메뉴) 제거
-  - Win32 `SetWindowLong`로 WS_CAPTION·WS_THICKFRAME·WS_SYSMENU 등 잔존 데코레이션 strip
-  - 매 에디터 틱 `body.worldBound` → 스크린 픽셀 → Unity 클라이언트 좌표 환산 → `SetWindowPos`
-  - drift gate로 동일 RECT 시 호출 생략
-  - `AssemblyReloadEvents.beforeAssemblyReload` + `EditorApplication.quitting` 안전망으로 도메인 리로드/종료 시 프로세스 정리
-- `Native/Win32.cs` — user32 P/Invoke 정의 (SetParent, SetWindowLongPtr, SetWindowPos, ScreenToClient 등)
+- `LICENSE` (MIT) file at the package root.
+- Polished GitHub-facing `README.md` with badges, feature list, "How it works"
+  section.
+
+### Changed
+- Package name `com.pncsolution.editor-browser` → `com.lwt.editor-browser`.
+- Author email `wtlee@pncsolution.co.kr` → `dldnjsxo95@gmail.com`.
+
+## [0.1.0] - 2026-05-21 (initial public release)
+
+### Added
+
+**Core UI shell**
+- `BrowserWindow` EditorWindow — toolbar (back/forward/refresh/URL),
+  embedded body region, status bar.
+- `UrlResolver` — pure function that turns Enter input into URL / domain /
+  search query.
+- `BrowserHistory` — back/forward navigation state.
+- Menu item `Window > Editor Browser` and shortcut **Shift+Alt+W**.
+- Default homepage `https://www.google.com/`.
+
+**Chrome embedding**
+- `BrowserDetector` — Chrome-first, Edge fallback (based on known install
+  paths).
+- `ExternalBrowserHost` — spawns Chrome / Edge as a separate process,
+  attaches its main HWND as an owner-popup of Unity's main window, and
+  synchronizes its position/size with the EditorWindow body region every
+  frame.
+  - `--app=<url>` flag to strip Chrome's tab/address/menu UI.
+  - Win32 `SetWindowLong` to strip `WS_CAPTION`, `WS_THICKFRAME`,
+    `WS_SYSMENU`, and other decorations.
+  - Per-frame `body.worldBound` → screen pixels → `SetWindowPos` sync.
+  - Drift gate skips redundant SetWindowPos when RECT is unchanged.
+  - `AssemblyReloadEvents.beforeAssemblyReload` + `EditorApplication.quitting`
+    cleanup hooks.
+- CDP-based in-place navigation (`Page.navigate`) — URL change no longer
+  restarts the Chrome process. ~100 ms typical navigate latency.
+- ContainerWindow API reflection — `EditorWindow.position` is replaced by
+  `Internal_GetTopleftScreenPosition()` + View tree `m_Position` accumulation
+  to avoid false transient `(0, 26)` values during dock-system frame races.
+- `WinEventHook` + background watchdog thread to keep Chrome positioned
+  correctly even during the OS drag modal loop.
+- URL Enter handling with `TrickleDown` + `NavigationSubmitEvent` so a single
+  Enter submits (previously needed two Enters due to IME composition).
+- `Native/Win32.cs` — user32 / kernel32 / gdi32 P/Invoke definitions
+  (SetWindowPos, SetWinEventHook, CreateProcess with
+  `CREATE_BREAKAWAY_FROM_JOB`, etc.).
 
 ### Notes
-- 브라우저 user-data-dir: `%LOCALAPPDATA%\EditorBrowser\BrowserProfile` (호스트 사용자 일반 프로필과 격리)
-- Windows 전용 — 다른 플랫폼에서는 임베드가 비활성화되고 UI 쉘만 동작
-- V1: URL 변경 시 process kill 후 재시작. V2에서 CDP(remote debugging) 기반 in-place navigate로 개선 예정.
+- Chrome user-data directory: `%LOCALAPPDATA%\EditorBrowser\BrowserProfile`
+  (isolated from the host user's normal Chrome profile).
+- Windows-only browser embedding — on other platforms the UI shell runs but
+  the embedded browser is disabled.
+- Known trade-offs documented in `README.md`:
+  - ~7 px DWM invisible border margin around the page.
+  - ~32 px Chrome PWA mini titlebar visible at top of body region.
