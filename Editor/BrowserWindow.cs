@@ -22,7 +22,6 @@ namespace EditorBrowser
     {
         private const string MenuPath = "Window/Editor Browser #&w";
         private const string WindowTitle = "Browser";
-        private const string LogPrefix = "[EditorBrowser]";
 
         private readonly BrowserHistory _history = new BrowserHistory();
         private ExternalBrowserHost _host;
@@ -435,22 +434,12 @@ namespace EditorBrowser
                 var ewType = typeof(UnityEditor.EditorWindow);
                 s_parentField = ewType.GetField("m_Parent",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (s_parentField == null)
-                {
-                    s_reflectionFailed = true;
-                    Debug.LogError($"{LogPrefix} EditorWindow.m_Parent not found (Unity API changed?)");
-                    return;
-                }
+                if (s_parentField == null) { s_reflectionFailed = true; return; }
 
                 var hostT = s_parentField.FieldType; // HostView
                 var viewT = hostT;
                 while (viewT != null && viewT.Name != "View") viewT = viewT.BaseType;
-                if (viewT == null)
-                {
-                    s_reflectionFailed = true;
-                    Debug.LogError($"{LogPrefix} UnityEditor.View base type not found (Unity API changed?)");
-                    return;
-                }
+                if (viewT == null) { s_reflectionFailed = true; return; }
 
                 s_viewWinField = viewT.GetField("m_Window",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
@@ -461,23 +450,17 @@ namespace EditorBrowser
                 if (s_viewWinField == null || s_viewPosField == null || s_viewParentField == null)
                 {
                     s_reflectionFailed = true;
-                    Debug.LogError($"{LogPrefix} View.{{m_Window,m_Position,m_Parent}} not found (Unity API changed?)");
                     return;
                 }
 
                 var cwType = s_viewWinField.FieldType; // ContainerWindow
                 s_getTopLeftMethod = cwType.GetMethod("Internal_GetTopleftScreenPosition",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
-                if (s_getTopLeftMethod == null)
-                {
-                    s_reflectionFailed = true;
-                    Debug.LogError($"{LogPrefix} ContainerWindow.Internal_GetTopleftScreenPosition not found (Unity API changed?)");
-                }
+                if (s_getTopLeftMethod == null) s_reflectionFailed = true;
             }
-            catch (Exception ex)
+            catch
             {
                 s_reflectionFailed = true;
-                Debug.LogError($"{LogPrefix} EnsureReflectionCache failed: {ex.Message}");
             }
         }
 
@@ -515,14 +498,10 @@ namespace EditorBrowser
                 }
                 return topLeft + acc;
             }
-            catch (Exception ex)
+            catch
             {
-                // Domain-reload race or Unity version mismatch — log once.
-                if (!s_reflectionFailed)
-                {
-                    s_reflectionFailed = true;
-                    Debug.LogError($"{LogPrefix} GetHostScreenTopLeft failed: {ex.Message}");
-                }
+                // Domain-reload race or Unity version mismatch.
+                s_reflectionFailed = true;
                 return new Vector2(float.NaN, float.NaN);
             }
         }

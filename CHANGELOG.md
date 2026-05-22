@@ -3,6 +3,31 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.1] - 2026-05-22
+
+### Changed
+- Removed the remaining nine `Debug.LogError` calls that v0.4.0 had kept
+  (browser-not-detected, `CreateProcess` failures x2, reflection-cache
+  failures x6). Verification of the dock/undock cycle with programmatic
+  measurement showed they were not load-bearing: failure modes are either
+  visible directly to the user (browser not appearing) or guarded by
+  `s_reflectionFailed` (one-shot, harmless if silenced). Net result: the
+  package produces zero console output under all normal and degraded paths.
+- Also removed the now-unused `LogPrefix` constants and the
+  `using Debug = UnityEngine.Debug;` alias from ExternalBrowserHost.cs.
+- Outdated CreateProcess fallback comment refreshed to match the
+  silent-fail behavior.
+
+### Verified
+- Programmatic dock (via `DockArea.AddTab` reflection) → snapshot →
+  programmatic undock → snapshot. Floating-before and floating-after
+  computed absRect are bit-identical: `(1314, 566) 673x604`. Chrome
+  HWND actual `GetWindowRect` matches the computed value exactly.
+- User-perceived "margin variation" across dock/undock is Unity's own
+  2px tab-strip height difference between floating (26px) and docked
+  (24px) hosts, and the View-tree depth/offset change (2 levels at
+  acc=(0,0) vs 4 levels at acc=(0,36)). Both are expected.
+
 ## [0.4.0] - 2026-05-22
 
 ### Changed

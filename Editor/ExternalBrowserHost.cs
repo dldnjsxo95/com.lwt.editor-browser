@@ -5,7 +5,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using EditorBrowser.Native;
 using UnityEngine;
-using Debug = UnityEngine.Debug;
 
 namespace EditorBrowser
 {
@@ -33,8 +32,6 @@ namespace EditorBrowser
     /// </summary>
     internal sealed class ExternalBrowserHost : IDisposable
     {
-        private const string LogPrefix = "[EditorBrowser]";
-
         // Chrome's main app window class prefix (Chrome_WidgetWin_0 or _1).
         private const string ChromeWindowClassPrefix = "Chrome_WidgetWin_";
 
@@ -273,11 +270,7 @@ namespace EditorBrowser
         private void Start(string url, int bodyX, int bodyY, int bodyW, int bodyH)
         {
             var info = BrowserDetector.Detect();
-            if (!info.IsAvailable)
-            {
-                Debug.LogError($"{LogPrefix} Neither Chrome nor Edge was detected. Install one of them.");
-                return;
-            }
+            if (!info.IsAvailable) return;
 
             try { Directory.CreateDirectory(UserDataDirRoot); }
             catch { }
@@ -343,9 +336,9 @@ namespace EditorBrowser
                 int err = Marshal.GetLastWin32Error();
                 if (err == 5) // ERROR_ACCESS_DENIED — Job rejects breakaway.
                 {
-                    // Expected fallback path on Unity 2022.3. Silent so it
-                    // doesn't spam the console on every Navigate; only the
-                    // second-failure case logs.
+                    // Expected fallback path on Unity 2022.3. Retry without
+                    // CREATE_BREAKAWAY_FROM_JOB; both attempts now fail silently
+                    // if the second one also fails.
                     ok = Native.Win32.CreateProcess(
                         lpApplicationName: null,
                         lpCommandLine: commandLine,
@@ -357,15 +350,10 @@ namespace EditorBrowser
                         lpCurrentDirectory: System.IO.Path.GetDirectoryName(info.ExecutablePath) ?? string.Empty,
                         lpStartupInfo: ref startupInfo,
                         lpProcessInformation: out procInfo);
-                    if (!ok)
-                    {
-                        Debug.LogError($"{LogPrefix} CreateProcess fallback also failed (lastError={Marshal.GetLastWin32Error()})");
-                        return;
-                    }
+                    if (!ok) return;
                 }
                 else
                 {
-                    Debug.LogError($"{LogPrefix} CreateProcess failed (lastError={err})");
                     return;
                 }
             }
