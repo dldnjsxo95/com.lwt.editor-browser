@@ -47,6 +47,22 @@ namespace EditorBrowser
             win.Focus();
         }
 
+        /// <summary>
+        /// Return the underlying <see cref="ExternalBrowserHost"/> of the
+        /// first open <see cref="BrowserWindow"/>, or <c>null</c> if no
+        /// browser window is open. Used by integration layers
+        /// (e.g. McpTools) to reach the host's automation surface
+        /// (<c>NavigateAsync</c>, <c>EvaluateAsync</c>,
+        /// <c>CaptureScreenshotAsync</c>) without having to walk the
+        /// EditorWindow registry themselves.
+        /// </summary>
+        public static ExternalBrowserHost GetActiveHost()
+        {
+            var wins = Resources.FindObjectsOfTypeAll<BrowserWindow>();
+            if (wins == null || wins.Length == 0) return null;
+            return wins[0]._host;
+        }
+
         private IVisualElementScheduledItem _syncSchedule;
         private IntPtr _winEventHook = IntPtr.Zero;
         private EditorBrowser.Native.Win32.WinEventDelegate _winEventDelegate; // keep alive against GC

@@ -1,7 +1,9 @@
 {
     "name": "EditorBrowser.Editor",
     "rootNamespace": "EditorBrowser",
-    "references": [],
+    "references": [
+        "EditorBrowser.Automation"
+    ],
     "includePlatforms": [
         "Editor"
     ],

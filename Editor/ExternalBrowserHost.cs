@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using EditorBrowser.Automation;
+using EditorBrowser.Automation.Protocol;
 using EditorBrowser.Native;
 using UnityEngine;
 
@@ -30,7 +32,7 @@ namespace EditorBrowser
     ///
     /// Windows-only. <see cref="Start"/> is a no-op on other platforms.
     /// </summary>
-    internal sealed class ExternalBrowserHost : IDisposable
+    public sealed class ExternalBrowserHost : IDisposable
     {
         // Chrome's main app window class prefix (Chrome_WidgetWin_0 or _1).
         private const string ChromeWindowClassPrefix = "Chrome_WidgetWin_";
@@ -53,6 +55,13 @@ namespace EditorBrowser
         // Chrome starts. Volatile because Navigate's background Task may
         // observe and write this from a worker thread.
         private volatile int _discoveredDevToolsPort;
+
+        // Cached page-target WebSocket URL after the first /json/list query.
+        // Per-call CDP commands (NavigateAsync / EvaluateAsync /
+        // CaptureScreenshotAsync) reuse this so they don't keep re-fetching
+        // /json/list. The URL stays stable for the lifetime of the Chrome
+        // process; reset on Start and DisposeProcess.
+        private volatile string _cachedPageWsUrl;
 
         // Reparenting before Chrome's rendering surface is initialized turns
         // the page black, and moving the window before first paint shows
@@ -99,22 +108,12 @@ namespace EditorBrowser
 
             if (IsAlive)
             {
-                // CDP call does sync HTTP + WebSocket waits; run on a
-                // background Task so the main thread isn't blocked. Port
-                // discovery (file read with brief retry) also lives on the
-                // worker thread so we never block Unity. Fire-and-forget:
-                // response (~50-200ms) is uninteresting.
+                // CDP roundtrip blocks until response — fire-and-forget on
+                // a worker so the main thread isn't held.
                 var captured = url;
-                System.Threading.Tasks.Task.Run(() =>
+                System.Threading.Tasks.Task.Run(async () =>
                 {
-                    // Unity API calls are unsafe off the main thread, so
-                    // swallow exceptions silently rather than logging.
-                    try
-                    {
-                        var port = _discoveredDevToolsPort;
-                        if (port <= 0) port = WaitForDevToolsPort();
-                        if (port > 0) CdpNavigate(captured, port);
-                    }
+                    try { await NavigateAsync(captured); }
                     catch { }
                 });
                 return;
@@ -124,63 +123,111 @@ namespace EditorBrowser
         }
 
         /// <summary>
-        /// Send Chrome DevTools Protocol <c>Page.navigate</c> to swap the
-        /// current page URL without restarting Chrome. The port is the OS-
-        /// assigned one discovered from Chrome's <c>DevToolsActivePort</c>
-        /// file (see <see cref="WaitForDevToolsPort"/>).
-        /// Called from a background thread — must not touch Unity APIs.
+        /// Send <c>Page.navigate</c> to the currently-alive browser via the
+        /// <see cref="EditorBrowser.Automation"/> CDP stack. Builds a short-
+        /// lived <see cref="CdpConnection"/> for each call — for typical
+        /// usage (one navigate per few seconds, occasional MCP-driven
+        /// automation) per-call setup is cheap (~100 ms) and avoids the
+        /// complexity of a persistent socket bound to the host's lifecycle.
         /// </summary>
-        private static bool CdpNavigate(string url, int port)
+        public async System.Threading.Tasks.Task<bool> NavigateAsync(string url, int timeoutMs = 10000)
         {
-            // Use 127.0.0.1 explicitly. With "localhost" the .NET DNS
-            // resolver tries IPv6 (::1) first and falls back to IPv4 only
-            // after a ~2 second timeout, adding that flat 2s to every
-            // ConnectAsync. Direct IPv4 brings it down to a few ms.
-            string listJson;
-            var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(
-                "http://127.0.0.1:" + port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/json/list");
-            req.Timeout = 1500;
-            using (var resp = (System.Net.HttpWebResponse)req.GetResponse())
-            using (var sr = new System.IO.StreamReader(resp.GetResponseStream()))
+            if (string.IsNullOrEmpty(url)) return false;
+            var wsUrl = await GetPageWebSocketUrlAsync().ConfigureAwait(false);
+            if (string.IsNullOrEmpty(wsUrl)) return false;
+            using (var conn = new CdpConnection())
             {
-                listJson = sr.ReadToEnd();
-            }
-            var m = System.Text.RegularExpressions.Regex.Match(
-                listJson, "\"webSocketDebuggerUrl\"\\s*:\\s*\"(ws://[^\"]+)\"");
-            if (!m.Success) return false;
-            // Chrome echoes back whatever Host header it received, so the
-            // URL here should already be 127.0.0.1, but replace defensively.
-            var wsUrl = m.Groups[1].Value.Replace("ws://localhost:", "ws://127.0.0.1:");
-
-            using (var ws = new System.Net.WebSockets.ClientWebSocket())
-            {
-                // ConnectAsync occasionally takes >2s under load; give it
-                // room. Verify State.Open explicitly after the wait returns.
-                var connectTask = ws.ConnectAsync(new System.Uri(wsUrl), System.Threading.CancellationToken.None);
-                if (!connectTask.Wait(5000)) return false;
-                if (ws.State != System.Net.WebSockets.WebSocketState.Open) return false;
-
-                var msg = "{\"id\":1,\"method\":\"Page.navigate\",\"params\":{\"url\":\""
-                          + EscapeJsonString(url) + "\"}}";
-                var bytes = System.Text.Encoding.UTF8.GetBytes(msg);
-                if (!ws.SendAsync(new System.ArraySegment<byte>(bytes),
-                    System.Net.WebSockets.WebSocketMessageType.Text, true,
-                    System.Threading.CancellationToken.None).Wait(3000))
-                    return false;
-
-                try
-                {
-                    ws.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
-                        "", System.Threading.CancellationToken.None).Wait(500);
-                }
-                catch { }
+                await conn.ConnectAsync(wsUrl, timeoutMs: 5000).ConfigureAwait(false);
+                var page = new Page(new CdpSession(conn));
+                await page.NavigateAsync(url, timeoutMs).ConfigureAwait(false);
             }
             return true;
         }
 
-        private static string EscapeJsonString(string s)
+        /// <summary>
+        /// Send <c>Runtime.evaluate</c> with <c>returnByValue: true</c>.
+        /// Returns the raw JSON response (caller parses
+        /// <c>result.value</c> / <c>result.exceptionDetails</c>).
+        /// Returns <c>null</c> if the browser isn't alive or the CDP
+        /// endpoint can't be reached.
+        /// </summary>
+        public async System.Threading.Tasks.Task<string> EvaluateAsync(string expression, int timeoutMs = 5000)
         {
-            return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            if (expression == null) return null;
+            var wsUrl = await GetPageWebSocketUrlAsync().ConfigureAwait(false);
+            if (string.IsNullOrEmpty(wsUrl)) return null;
+            using (var conn = new CdpConnection())
+            {
+                await conn.ConnectAsync(wsUrl, timeoutMs: 5000).ConfigureAwait(false);
+                var runtime = new Runtime(new CdpSession(conn));
+                return await runtime.EvaluateAsync(expression, timeoutMs).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// Send <c>Page.captureScreenshot</c> and return the decoded PNG
+        /// bytes. Returns <c>null</c> if the browser isn't alive, the CDP
+        /// endpoint can't be reached, or the base64 payload couldn't be
+        /// parsed out of the response.
+        /// </summary>
+        public async System.Threading.Tasks.Task<byte[]> CaptureScreenshotAsync(int timeoutMs = 10000)
+        {
+            var wsUrl = await GetPageWebSocketUrlAsync().ConfigureAwait(false);
+            if (string.IsNullOrEmpty(wsUrl)) return null;
+            string json;
+            using (var conn = new CdpConnection())
+            {
+                await conn.ConnectAsync(wsUrl, timeoutMs: 5000).ConfigureAwait(false);
+                var page = new Page(new CdpSession(conn));
+                json = await page.CaptureScreenshotAsync(timeoutMs).ConfigureAwait(false);
+            }
+            // Extract result.data (base64-encoded PNG) — keep regex flat
+            // since CdpConnection only does minimal root-level parsing.
+            var m = System.Text.RegularExpressions.Regex.Match(
+                json, "\"data\"\\s*:\\s*\"([A-Za-z0-9+/=]+)\"");
+            if (!m.Success) return null;
+            try { return System.Convert.FromBase64String(m.Groups[1].Value); }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Discover the page-target WebSocket URL by GETting
+        /// <c>http://127.0.0.1:&lt;port&gt;/json/list</c> and extracting the
+        /// first <c>webSocketDebuggerUrl</c>. Cached after first success
+        /// for the lifetime of the Chrome process; reset on
+        /// <see cref="Start"/> and <see cref="DisposeProcess"/>.
+        /// </summary>
+        private async System.Threading.Tasks.Task<string> GetPageWebSocketUrlAsync()
+        {
+            if (!string.IsNullOrEmpty(_cachedPageWsUrl)) return _cachedPageWsUrl;
+            int port = _discoveredDevToolsPort;
+            if (port <= 0) port = WaitForDevToolsPort();
+            if (port <= 0) return null;
+
+            // /json/list is a small, fast endpoint — sync HTTP is fine.
+            // Run it on a worker so we never block the calling thread
+            // (typically already a worker, but be defensive).
+            return await System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(
+                        "http://127.0.0.1:" + port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/json/list");
+                    req.Timeout = 1500;
+                    string listJson;
+                    using (var resp = (System.Net.HttpWebResponse)req.GetResponse())
+                    using (var sr = new System.IO.StreamReader(resp.GetResponseStream()))
+                    {
+                        listJson = sr.ReadToEnd();
+                    }
+                    var m = System.Text.RegularExpressions.Regex.Match(
+                        listJson, "\"webSocketDebuggerUrl\"\\s*:\\s*\"(ws://[^\"]+)\"");
+                    if (!m.Success) return (string)null;
+                    _cachedPageWsUrl = m.Groups[1].Value;
+                    return _cachedPageWsUrl;
+                }
+                catch { return (string)null; }
+            }).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -448,6 +495,7 @@ namespace EditorBrowser
             _processStartUtc = DateTime.UtcNow;
             _lastX = _lastY = _lastW = _lastH = int.MinValue;
             _discoveredDevToolsPort = 0;
+            _cachedPageWsUrl = null;
         }
 
         /// <summary>
@@ -646,6 +694,7 @@ namespace EditorBrowser
             _visible = false;
             _lastX = _lastY = _lastW = _lastH = int.MinValue;
             _discoveredDevToolsPort = 0;
+            _cachedPageWsUrl = null;
         }
     }
 }

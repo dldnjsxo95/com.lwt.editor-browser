@@ -3,6 +3,74 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.6] - 2026-05-22
+
+### Added (Step 4a — handoff)
+- `ExternalBrowserHost.NavigateAsync(url)` — public async API that runs
+  `Page.navigate` via the `EditorBrowser.Automation` CDP stack. Replaces
+  the old static `CdpNavigate` (hardcoded `Page.navigate` over a one-shot
+  `ClientWebSocket`). Caches the page-target WebSocket URL after the
+  first `/json/list` query and reuses it across calls.
+- `ExternalBrowserHost.EvaluateAsync(expression)` — returns the raw CDP
+  JSON for `Runtime.evaluate` (with `returnByValue: true`).
+- `ExternalBrowserHost.CaptureScreenshotAsync()` — sends
+  `Page.captureScreenshot`, decodes the base64 PNG, returns `byte[]`.
+- `BrowserWindow.GetActiveHost()` — public static accessor returning the
+  host of the first open BrowserWindow. Used by the optional MCP layer.
+
+### Added (Step 4b — optional MCP wiring)
+- New `EditorBrowser.Mcp` assembly with `EditorBrowserMcpTool` exposing a
+  single `editor_browser` MCP sub-tool to Claude / MCP clients. Actions:
+  `navigate (url)`, `evaluate (expression)`, `screenshot`. Auto-discovered
+  by UnityMCP's `CommandRegistry` via `[McpForUnityTool]` attribute.
+  Returns plain anonymous objects via Newtonsoft.Json.
+- `HandleCommand` is `async Task<object>` — `CommandRegistry` routes it
+  through the async path, so CDP roundtrips run on a worker without ever
+  blocking Unity's main thread.
+- Schema parameters declared via a nested `Parameters` class with
+  `[ToolParameter]` properties (the format `ToolDiscoveryService`
+  consumes); shows up in the tool's JSON schema once the MCP client
+  reconnects.
+
+### Changed
+- `EditorBrowser.Editor` asmdef now references `EditorBrowser.Automation`
+  (host code uses `Page` / `Runtime` from the CDP library).
+- `EditorBrowser.Automation` asmdef no longer references
+  `EditorBrowser.Editor` — kept as a pure library with zero external
+  dependencies. Cleans up the previous circular-reference risk.
+- `ExternalBrowserHost` is now `public sealed class` (was `internal`) so
+  the optional MCP assembly can reach its automation surface.
+
+### Conditional compilation
+- `Editor/Mcp/EditorBrowser.Mcp.asmdef` carries
+  `defineConstraints: ["EDITORBROWSER_HAS_UNITY_MCP"]` plus
+  `versionDefines` on `com.coplaydev.unity-mcp`. Without UnityMCP the
+  `EditorBrowser.Mcp.dll` is **not built at all** — the browser package
+  keeps working as a standalone Editor tool with zero MCP dependency
+  and zero broken references.
+- This satisfies the package portability rule (no external dependencies)
+  while still auto-integrating with UnityMCP when present.
+
+### Verified
+- All four EditorBrowser.* assemblies build: `Editor`, `Automation`,
+  `Mcp`, plus the host's `MCPAutoStart`.
+- `ToolDiscoveryService.GetToolMetadata("editor_browser")` returns the
+  full schema: 3 typed parameters with descriptions.
+- `CommandRegistry` registers the handler as **async** (return type
+  `Task<object>`).
+- End-to-end via `host.NavigateAsync` on a thread pool: Chrome spawns,
+  attaches, navigates to a real URL, CDP roundtrip succeeds.
+
+### Known limitation
+- Calling `HandleCommand` from Unity's main thread via
+  `Task.Wait()` / `.GetAwaiter().GetResult()` deadlocks even with
+  `ConfigureAwait(false)` everywhere — likely because Unity's
+  `SynchronizationContext` or the Mono `ClientWebSocket` does not honor
+  the false on every continuation. UnityMCP's actual dispatch path uses
+  `await`, not `.Wait()`, so this does not affect MCP clients in
+  practice — but any test that spawns the tool from the main thread
+  must wrap the call in `Task.Run` to avoid the deadlock.
+
 ## [0.4.5] - 2026-05-22
 
 ### Added

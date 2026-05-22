@@ -1,0 +1,27 @@
+{
+    "name": "EditorBrowser.Mcp",
+    "rootNamespace": "EditorBrowser",
+    "references": [
+        "EditorBrowser.Editor",
+        "MCPForUnity.Editor",
+        "Unity.Newtonsoft.Json"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "EDITORBROWSER_HAS_UNITY_MCP"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.coplaydev.unity-mcp",
+            "expression": "0.0.0",
+            "define": "EDITORBROWSER_HAS_UNITY_MCP"
+        }
+    ],
+    "noEngineReferences": false
+}
