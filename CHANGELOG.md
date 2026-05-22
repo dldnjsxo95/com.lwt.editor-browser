@@ -3,6 +3,44 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.9] - 2026-05-22
+
+### Added
+- `Editor/Claude/EbSlashCommandInstaller.cs` — one-click installer for
+  the `/eb` Claude Code slash command. New menu entry:
+  `Window > Editor Browser Setup > Install eb Slash Command…`. Asks
+  whether to install **User-Global** (`%USERPROFILE%\.claude\commands\eb.md`)
+  or **Current Project** (`<project>/.claude/commands/eb.md`) and copies
+  the bundled `eb.md` into place. Asks to overwrite if a previous copy
+  exists, with the package version mentioned in the prompt.
+- `Editor/Claude/eb.md` — the canonical bundled copy of the slash
+  command, identical to the repo-root `.claude/commands/eb.md`. The
+  installer resolves it via
+  `UnityEditor.PackageManager.PackageInfo.FindForAssembly(...).resolvedPath`
+  so it works whether the package is consumed via UPM Git URL, local
+  file dependency, or as an embedded `Packages/` folder.
+
+### Changed
+- README "Optional: Claude Code `/eb`" subsection reorganized. The
+  Editor menu is now the recommended install path; the manual copy
+  workflow is documented as the alternative. Install pin bumped
+  `#v0.4.8` → `#v0.4.9`.
+
+### Implementation notes
+- Installer lives in the `EditorBrowser.Editor` asmdef (no MCP
+  dependency) so the menu is always available — even in projects that
+  have not yet installed `com.coplaydev.unity-mcp`. eb.md self-documents
+  the UnityMCP runtime requirement, and the post-install dialog
+  reiterates it.
+- Uses an explicit
+  `using PackageInfo = UnityEditor.PackageManager.PackageInfo;` alias
+  to dodge `CS0104` ambiguity with the legacy `UnityEditor.PackageInfo`
+  (AssetStore) type that `using UnityEditor;` exposes.
+- Two `eb.md` copies (repo root for the dev/host session, package
+  bundle for consumers) must be kept in sync at release time. Future
+  cleanup option: drop the repo-root copy and rely on the package's
+  installer + manual copy alone; deferred to keep this release scoped.
+
 ## [0.4.8] - 2026-05-22
 
 ### Changed

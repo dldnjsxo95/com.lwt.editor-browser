@@ -29,12 +29,12 @@ Add this line to your project's `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.lwt.editor-browser": "https://github.com/dldnjsxo95/UnityEditorBrowser.git#v0.4.8"
+    "com.lwt.editor-browser": "https://github.com/dldnjsxo95/UnityEditorBrowser.git#v0.4.9"
   }
 }
 ```
 
-The `#v0.4.8` tag locks the version. Omit it to always follow `main`.
+The `#v0.4.9` tag locks the version. Omit it to always follow `main`.
 
 Unity Package Manager fetches and compiles the package automatically. The
 menu item `Window > Editor Browser` and the shortcut `Shift + Alt + W`
@@ -53,20 +53,27 @@ become available immediately.
 ### Optional: Claude Code `/eb` slash command
 
 If you use [Claude Code](https://claude.com/claude-code) with the
-[UnityMCP](https://github.com/CoplayDev/unity-mcp) bridge, this repo ships a
-`/eb <natural-language>` slash command at
-[`.claude/commands/eb.md`](https://github.com/dldnjsxo95/UnityEditorBrowser/blob/main/.claude/commands/eb.md)
-that drives the browser via the `editor_browser` MCP tool (e.g.
-`/eb open naver and search 맛집`).
+[UnityMCP](https://github.com/CoplayDev/unity-mcp) bridge, the package
+ships a `/eb <natural-language>` slash command that drives the browser
+via the `editor_browser` MCP tool (e.g. `/eb open naver and search 맛집`).
 
-Install in either location — no editing required (since v0.4.8 the file
-detects your project path via `pwd` and the latest Unity 6 install
-under `Hub/Editor/`):
+**Install (recommended, since v0.4.9):**
 
-- **Per-project** — copy to `<your-project>/.claude/commands/eb.md`.
-- **User-global** — copy to `%USERPROFILE%\.claude\commands\eb.md`
-  (`~/.claude/commands/eb.md` on Linux/macOS) to enable `/eb` in every
-  Claude Code session, regardless of project.
+In Unity, run `Window > Editor Browser Setup > Install eb Slash Command…`
+and pick either **User-Global** (`%USERPROFILE%\.claude\commands\eb.md`,
+available in every Claude Code session) or **Current Project**
+(`<project>/.claude/commands/eb.md`). Restart Claude Code afterwards to
+register `/eb`.
+
+**Manual install** (if you prefer not to use the Editor menu):
+
+Copy the bundled
+`Packages/com.lwt.editor-browser/Editor/Claude/eb.md` (UPM install) or
+`.claude/commands/eb.md` (repo checkout) into either
+`<project>/.claude/commands/` or `%USERPROFILE%\.claude\commands\`
+(`~/.claude/commands/` on Linux/macOS). No editing required since v0.4.8
+— the file resolves your project path via `pwd` and discovers the latest
+Unity 6 install under `Hub/Editor/`.
 
 When multiple Unity instances are open at once, the skill prefers the
 instance whose project path matches your current working directory and
