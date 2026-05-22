@@ -3,6 +3,33 @@
 This package follows [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.4.5] - 2026-05-22
+
+### Added
+- `EditorBrowser.Automation.Protocol.Page` — CDP `Page` domain wrapper
+  over a `CdpSession`. Methods: `EnableAsync` (turn on Page events),
+  `NavigateAsync(url)` (sends `Page.navigate` — no load-wait), and
+  `CaptureScreenshotAsync` (returns raw JSON; PNG bytes are base64-
+  encoded under `result.data` for caller to decode).
+- `EditorBrowser.Automation.Protocol.Runtime` — CDP `Runtime` domain
+  wrapper. Methods: `EnableAsync` (turn on Runtime events) and
+  `EvaluateAsync(expression)` (sends `Runtime.evaluate` with
+  `returnByValue:true` so the result is JSON-serialized).
+- New subfolder `Editor/Automation/Protocol/` for future domain wrappers
+  (Input, DOM, Network are v2 candidates).
+
+No callers yet — `ExternalBrowserHost.CdpNavigate` keeps its inline
+implementation. The Protocol layer rides dormant in
+`EditorBrowser.Automation.dll` until the final integration option wires
+it up.
+
+### Notes
+- Both `Page.cs` and `Runtime.cs` ship as separate files (unlike v0.4.4's
+  combined `CdpConnection.cs`). The Unity 6 CompilationPipeline stale-
+  cache that hit us last release did not recur — likely because the
+  files live in a new subfolder (`Protocol/`) the Editor had not seen
+  before, so it indexed them fresh.
+
 ## [0.4.4] - 2026-05-22
 
 ### Added
