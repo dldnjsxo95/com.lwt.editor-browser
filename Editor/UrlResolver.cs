@@ -1,1 +1,65 @@
-﻿using System;using System.Linq;namespace EditorBrowser{    /// <summary>    /// ?ъ슜???낅젰??(1) ?좏슚 URL?대㈃ 洹몃?濡? (2) ?꾨찓???뺥깭硫?https:// ?묐몢 遺李?    /// (3) 洹??몄뿉??Google 寃??荑쇰━濡?蹂?섑븳??    /// ?쒖닔 ?⑥닔 ??Unity ?섏〈 ?놁쓬, ?⑥쐞 ?뚯뒪???⑹씠.    /// </summary>    internal static class UrlResolver    {        internal const string DefaultHomepage = "https://www.google.com/";        private const string GoogleSearchPrefix = "https://www.google.com/search?q=";        public static string Resolve(string input)        {            if (string.IsNullOrWhiteSpace(input))                return DefaultHomepage;            var trimmed = input.Trim();            // 1) 紐낆떆??http/https scheme ??洹몃?濡??ъ슜            if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) &&                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))            {                return trimmed;            }            // 2) ?몄뒪?몄쿂??蹂댁씠硫?https:// ?묐몢 遺李?            if (LooksLikeHost(trimmed))                return "https://" + trimmed;            // 3) 寃??荑쇰━            return GoogleSearchPrefix + Uri.EscapeDataString(trimmed);        }        private static bool LooksLikeHost(string s)        {            // 怨듬갚 ?ы븿?섎㈃ ?몄뒪???꾨떂 (寃?됱뼱濡?泥섎━)            if (s.IndexOf(' ') >= 0) return false;            // localhost / localhost:port            if (s == "localhost" || s.StartsWith("localhost:", StringComparison.Ordinal)) return true;            // path/query ?쇱뼱?닿퀬 ?몄뒪??遺遺꾨쭔            var hostPart = s;            var slashIdx = hostPart.IndexOf('/');            if (slashIdx >= 0) hostPart = hostPart.Substring(0, slashIdx);            // ?먯씠 ?놁쑝硫??꾨찓???꾨떂            var lastDot = hostPart.LastIndexOf('.');            if (lastDot < 0 || lastDot == hostPart.Length - 1) return false;            // 留덉?留?dot ?댄썑媛 TLD ?꾨낫 (port 遺꾨━)            var tldPart = hostPart.Substring(lastDot + 1);            var colonIdx = tldPart.IndexOf(':');            if (colonIdx >= 0) tldPart = tldPart.Substring(0, colonIdx);            // TLD??2???댁긽, ?뚰뙆踰노쭔 (IPv4???섎룄?곸쑝濡?寃?됱쑝濡??섎젮蹂대궡吏 ?딄쾶 蹂꾨룄 泥섎━ 媛?ν븯??            // ?꾩옱???⑥닚 ?대━?ㅽ떛?쇰줈 異⑸텇 ???ъ슜?먭? 紐낆떆??http:// 遺숈뿬??1)?먯꽌 ?≫옒)            return tldPart.Length >= 2 && tldPart.All(char.IsLetter);        }    }}
+using System;
+using System.Linq;
+
+namespace EditorBrowser
+{
+    /// <summary>
+    /// 사용자 입력을 (1) 유효 URL이면 그대로, (2) 도메인 형태면 https:// 접두 부착,
+    /// (3) 그 외에는 Google 검색 쿼리로 변환한다.
+    /// 순수 함수 — Unity 의존 없음, 단위 테스트 용이.
+    /// </summary>
+    internal static class UrlResolver
+    {
+        internal const string DefaultHomepage = "https://www.google.com/";
+        private const string GoogleSearchPrefix = "https://www.google.com/search?q=";
+
+        public static string Resolve(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return DefaultHomepage;
+
+            var trimmed = input.Trim();
+
+            // 1) 명시적 http/https scheme → 그대로 사용
+            if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) &&
+                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+            {
+                return trimmed;
+            }
+
+            // 2) 호스트처럼 보이면 https:// 접두 부착
+            if (LooksLikeHost(trimmed))
+                return "https://" + trimmed;
+
+            // 3) 검색 쿼리
+            return GoogleSearchPrefix + Uri.EscapeDataString(trimmed);
+        }
+
+        private static bool LooksLikeHost(string s)
+        {
+            // 공백 포함하면 호스트 아님 (검색어로 처리)
+            if (s.IndexOf(' ') >= 0) return false;
+
+            // localhost / localhost:port
+            if (s == "localhost" || s.StartsWith("localhost:", StringComparison.Ordinal)) return true;
+
+            // path/query 떼어내고 호스트 부분만
+            var hostPart = s;
+            var slashIdx = hostPart.IndexOf('/');
+            if (slashIdx >= 0) hostPart = hostPart.Substring(0, slashIdx);
+
+            // 점이 없으면 도메인 아님
+            var lastDot = hostPart.LastIndexOf('.');
+            if (lastDot < 0 || lastDot == hostPart.Length - 1) return false;
+
+            // 마지막 dot 이후가 TLD 후보 (port 분리)
+            var tldPart = hostPart.Substring(lastDot + 1);
+            var colonIdx = tldPart.IndexOf(':');
+            if (colonIdx >= 0) tldPart = tldPart.Substring(0, colonIdx);
+
+            // TLD는 2자 이상, 알파벳만 (IPv4는 의도적으로 검색으로 흘려보내지 않게 별도 처리 가능하나
+            // 현재는 단순 휴리스틱으로 충분 — 사용자가 명시적 http:// 붙여도 1)에서 잡힘)
+            return tldPart.Length >= 2 && tldPart.All(char.IsLetter);
+        }
+    }
+}

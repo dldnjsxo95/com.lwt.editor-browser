@@ -1,1 +1,18 @@
-﻿{  "name": "com.lwt.editor-browser",  "version": "0.2.3",  "displayName": "Editor Browser",  "description": "A web browser that lives inside the Unity Editor as a dockable Tab. Uses installed Chrome (--app= PWA mode) with Edge fallback on Windows.",  "unity": "2022.3",  "author": {    "name": "LEEWONTAE",    "email": "dldnjsxo95@gmail.com"  },  "keywords": [    "editor",    "browser",    "tool",    "window"  ],  "type": "tool"}
+{
+  "name": "com.lwt.editor-browser",
+  "version": "0.2.4",
+  "displayName": "Editor Browser",
+  "description": "A web browser that lives inside the Unity Editor as a dockable Tab. Uses installed Chrome (--app= PWA mode) with Edge fallback on Windows.",
+  "unity": "2022.3",
+  "author": {
+    "name": "LEEWONTAE",
+    "email": "dldnjsxo95@gmail.com"
+  },
+  "keywords": [
+    "editor",
+    "browser",
+    "tool",
+    "window"
+  ],
+  "type": "tool"
+}
